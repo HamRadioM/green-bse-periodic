@@ -1,0 +1,104 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "BSE Solver – N2/STO-3G singlet (molecular)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-u", "script/solveCasida_main.py",
+        "--type",     "singlet",
+        "--beta",     "1000",
+        "--qpac",     "1",
+        "--iter",     "-1",
+        "--iter_W",   "-1",
+        "--calc_pi",  "1",
+        "--monitor",  "1",
+        "--n_jobs",   "-1",
+        "--input",    "example/N2_STO3G/mean_field_input.h5",
+        "--sim",      "example/N2_STO3G/scGW_sim.h5",
+        "--int_path", "example/N2_STO3G/df_hf_int/",
+        "--ir_file",  "example/N2_STO3G/irgrid/1e5.h5",
+        "--output",   "example/N2_STO3G/bse_singlet.h5"
+      ],
+      "port": null
+    },
+    {
+      "name": "BSE Solver – N2/STO-3G triplet (molecular)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-u", "script/solveCasida_main.py",
+        "--type",     "triplet",
+        "--beta",     "1000",
+        "--qpac",     "1",
+        "--iter",     "-1",
+        "--iter_W",   "-1",
+        "--calc_pi",  "1",
+        "--monitor",  "1",
+        "--n_jobs",   "-1",
+        "--input",    "example/N2_STO3G/mean_field_input.h5",
+        "--sim",      "example/N2_STO3G/scGW_sim.h5",
+        "--int_path", "example/N2_STO3G/df_hf_int/",
+        "--ir_file",  "example/N2_STO3G/irgrid/1e5.h5",
+        "--output",   "example/N2_STO3G/bse_triplet.h5"
+      ],
+      "port": null
+    },
+    {
+      "name": "BSE Solver – N2/STO-3G singlet (periodic, validation)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-u", "script/solveCasida_periodic.py",
+        "--type",     "singlet",
+        "--beta",     "1000",
+        "--qpac",     "1",
+        "--iter",     "-1",
+        "--iter_W",   "-1",
+        "--calc_pi",  "1",
+        "--monitor",  "1",
+        "--n_jobs",   "-1",
+        "--input",    "example/N2_STO3G/mean_field_input.h5",
+        "--sim",      "example/N2_STO3G/scGW_sim.h5",
+        "--int_path", "example/N2_STO3G/df_hf_int/",
+        "--ir_file",  "example/N2_STO3G/irgrid/1e5.h5",
+        "--output",   "example/N2_STO3G/bse_periodic_singlet.h5"
+      ],
+      "port": null
+    },
+    {
+      "name": "Plot Spectrum – N2/STO-3G",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-u", "script/plot_spectrum.py",
+        "--bse_file",  "example/N2_STO3G/bse_singlet.h5",
+        "--plot_file", "example/N2_STO3G/exc_spectrum.pdf",
+        "--eta",       "0.1",
+        "--w_max",     "15"
+      ],
+      "port": null
+    },
+    {
+      "name": "Plasmon Pole Fit Curve – N2/STO-3G excitation 0",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-u", "script/plasmon_pole_fit_curve.py",
+        "--bse_file", "example/N2_STO3G/bse_singlet.h5",
+        "--ir_grid",  "example/N2_STO3G/irgrid/1e5.h5",
+        "--exc_idx",  "0"
+      ],
+      "port": null
+    },
+    {
+      "name": "Particle-Hole Excitation (MO) – N2/STO-3G",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-u", "script/ph_excitation_MO.py",
+        "--bse_file",      "example/N2_STO3G/bse_singlet.h5",
+        "--coords_file",   "example/N2_STO3G/N2_geom.dat",
+        "--molden_path",   "example/N2_STO3G/molden",
+        "--basis",         "sto-3g",
+        "--excitation_num","5"
+      ],
+      "port": null
+    }
+  ]
+}
