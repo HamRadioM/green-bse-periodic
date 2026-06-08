@@ -237,6 +237,81 @@ def eval_P0_tilde_Q(iter, nao, NQ,
     return P0_tilde
 
 
+def eval_Pi0_MO_active(iter, active_mo_indices,
+                        input_h5="input.h5",
+                        sim_h5="scgw/sim.h5"):
+    """
+    Calculate the independent-particle polarizability Pi0 in the MO basis,
+    restricted to an active space of MOs near the Fermi level.
+
+    Unlike eval_P0_tilde_Q, this function does NOT contract with the
+    density-fitting integrals VQ.  Pi0 is returned directly in MO-index space.
+
+    Pi0[t, s, k, p, q, r, s'] = -G_MO(beta-t)[p, r] * G_MO(t)[q, s']
+
+    where p, q, r, s' run over the supplied active-space MO indices.
+    Only the first num_tau//2 tau points are filled (the second half is left
+    zero and should be completed by symmetrize_P0 or equivalent).
+
+    Parameters
+    ----------
+    iter : int
+        Iteration index for reading G_tau from sim_h5 (-1 = last iteration).
+    active_mo_indices : array-like of int
+        Indices of the active MOs (near the Fermi level) within the full
+        MO set.  All k-points share the same index window.
+    input_h5 : str
+        HDF5 file containing MO coefficients at "/HF/mo_coeff".
+        Shape (nao, nmo) for molecular or (nk, nao, nmo) for periodic.
+    sim_h5 : str
+        HDF5 file from scGW containing G_tau.
+
+    Returns
+    -------
+    Pi0 : ndarray, complex128
+        Shape (num_tau, num_s, num_k, n_act, n_act, n_act, n_act).
+    """
+    active_mo_indices = np.asarray(active_mo_indices)
+    n_act = len(active_mo_indices)
+
+    G_tau = readGtau(sim_h5, iter)
+    num_tau = G_tau.shape[0]
+    num_s   = G_tau.shape[1]
+    num_k   = G_tau.shape[2]
+    nao     = G_tau.shape[3]
+
+    C_all = h5py.File(input_h5, "r")["/HF/mo_coeff"][()]
+    if C_all.ndim == 2:
+        # Molecular (single k-point): broadcast over k dimension
+        C_all = np.tile(C_all[np.newaxis, :, :], (num_k, 1, 1))
+    # C_all shape: (num_k, nao, nmo)
+
+    Pi0 = np.zeros((num_tau, num_s, num_k, n_act, n_act, n_act, n_act),
+                   dtype=np.complex128)
+
+    print("*****     Pi0 (active MO space)     *****")
+
+    for t in range(num_tau // 2):
+        tt = num_tau - t - 1   # beta - t index
+        for s in range(num_s):
+            for k in range(num_k):
+                C_act = C_all[k, :, active_mo_indices]  # (n_act, nao), rows = MOs
+                # G_MO[p,r] = sum_{a,b} C_act*[p,a] G_AO[a,b] C_act[r,b]
+                #            = C_act.conj() @ G_AO @ C_act.T
+
+                g_ao1 = G_tau[tt, s, k].reshape(nao, nao)   # G(beta - t)
+                g_ao2 = G_tau[t,  s, k].reshape(nao, nao)   # G(t)
+
+                g_mo1 = C_act.conj() @ g_ao1 @ C_act.T      # (n_act, n_act)
+                g_mo2 = C_act.conj() @ g_ao2 @ C_act.T      # (n_act, n_act)
+
+                # Pi0[p,q,r,s] = -G(beta-t)[p,r] * G(t)[q,s]
+                Pi0[t, s, k] -= np.einsum('pr,qs->pqrs', g_mo1, g_mo2,
+                                          optimize=True)
+
+    return Pi0
+
+
 def symmetrize_P0(P0_tilde):
     """
     Symmetrize P0 using tau symmetry: P0(t) = P0(beta - t).

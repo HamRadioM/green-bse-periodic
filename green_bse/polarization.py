@@ -688,3 +688,208 @@ class PolarizationSolver:
         print(f"    /iter{it}/W_qq_iw    : {W_qq_iw.shape}  (direct, I + P̃)")
         print(f"    /iter{it}/W_iw       : {W_iw.shape}  (AO exchange-contracted)")
         print(f"    /iter{it}/U_qq       : {U_qq.shape}  (exchange bare Coulomb)")
+
+
+# ---------------------------------------------------------------------------
+# Active-space screened Coulomb W in the MO basis
+# ---------------------------------------------------------------------------
+
+def eval_W_MO_active(VQ, Pi_iw, active_mo_indices):
+    """
+    Calculate the screened Coulomb interaction W in the active MO space.
+
+    Mirrors the W construction in casidaEq.py but restricts all MO indices
+    to the supplied active-space window instead of the full occ/virt split.
+
+    The formula at each frequency point is:
+
+        W[p,q,r,s] = sum_Q  V_act[Q,p,q] * V_act[Q,r,s]                (bare)
+                   + sum_{Q,P} V_act[Q,p,q] * Pi[Q,P] * V_act[P,r,s]  (screened)
+
+    where p,q,r,s ∈ active_mo_indices and Pi is the dressed polarizability
+    in the auxiliary Q-basis (unchanged from the full calculation).
+
+    Parameters
+    ----------
+    VQ : ndarray, shape (1, NQ, nmo, nmo)
+        Two-electron integrals in the MO basis (output of casida.VQ_ao2mo).
+    Pi_iw : ndarray, shape (niw, 1, NQ, NQ, 1)
+        Dressed polarizability in the auxiliary Q-basis on the Matsubara
+        frequency grid (tildeP_iw from BSESolver.prepare_interaction_matrices).
+    active_mo_indices : array-like of int
+        MO indices defining the active space.
+
+    Returns
+    -------
+    W_act : ndarray, complex128, shape (niw, n_act, n_act, n_act, n_act)
+        W_act[iw, p, q, r, s] is the screened Coulomb interaction at
+        frequency iw with all indices in the active space.
+    """
+    active_mo_indices = np.asarray(active_mo_indices)
+    n_act = len(active_mo_indices)
+    niw   = Pi_iw.shape[0]
+
+    # Restrict VQ to the active MO subspace: (NQ, n_act, n_act)
+    VQ_act = VQ[0, :, :, :][:, active_mo_indices, :][:, :, active_mo_indices]
+
+    # Bare Coulomb term (frequency-independent): V[Q,p,q]*V[Q,r,s]
+    U_bare = np.einsum('qij,qkl->ijkl', VQ_act, VQ_act, optimize=True)
+
+    W_act = np.zeros((niw, n_act, n_act, n_act, n_act), dtype=np.complex128)
+
+    for iw in range(niw):
+        Pi = Pi_iw[iw, 0, :, :, 0]          # (NQ, NQ)
+        # Pi * V_act -> (NQ, n_act, n_act)
+        PV = np.einsum('qp,pkl->qkl', Pi, VQ_act, optimize=True)
+        # V_act * PV -> (n_act, n_act, n_act, n_act)
+        VPV = np.einsum('qij,qkl->ijkl', VQ_act, PV, optimize=True)
+        W_act[iw] = (U_bare + VPV).transpose(0,2,3,1)
+
+    return W_act
+
+
+def eval_screened_W_active(W_act, Pi_iw):
+    """
+    Compute the BSE kernel  [I - (W Pi)^2]^{-1} W  in the active MO space.
+
+    W and Pi are treated as matrices over MO-pair indices:
+        M_{(p,q),(r,s)}  ↔  M[p, q, r, s]
+    so the matrix product (WPi) contracts the (r,s) legs of W against the
+    (p,q) legs of Pi.
+
+    At each frequency point:
+        WPi    = W  @ Pi              (n_act^2 × n_act^2 matrix product)
+        result = (I - WPi @ WPi)^{-1} W
+
+    Parameters
+    ----------
+    W_act : ndarray, complex128, shape (niw, n_act, n_act, n_act, n_act)
+        Screened Coulomb interaction in the active MO space (from eval_W_MO_active).
+    Pi_iw : ndarray, complex128, shape (niw, n_act, n_act, n_act, n_act)
+        Independent-particle polarizability in the active MO space on the
+        Matsubara frequency grid.
+
+    Returns
+    -------
+    result : ndarray, complex128, shape (niw, n_act, n_act, n_act, n_act)
+        [I - (W Pi)^2]^{-1} W evaluated at each frequency point.
+    """
+    niw   = W_act.shape[0]
+    n_act = W_act.shape[1]
+    n2    = n_act * n_act
+    I     = np.eye(n2, dtype=np.complex128)
+
+    result = np.zeros_like(W_act)
+
+    for iw in range(niw):
+        W_mat  = W_act[iw].reshape(n2, n2)
+        Pi_mat = Pi_iw[iw].reshape(n2, n2)
+
+        WPi  = W_mat @ Pi_mat
+        WPi2 = WPi @ WPi                          # (W Pi)^2
+
+        result[iw] = np.linalg.solve(I - WPi2, W_mat).reshape(n_act, n_act, n_act, n_act)
+
+    return result
+
+
+def eval_VPiSWPiV(VQ_act, Pi_iw, screened_W):
+    """
+    Compute the contraction  V Pi (screened_W) Pi V  in the auxiliary Q-basis.
+
+    All MO-pair indices are treated as flat vectors so the expression becomes
+    a sequence of matrix multiplications:
+
+        result[Q, Q'] = V[Q, :] @ Pi @ SW @ Pi @ V[Q', :].conj()
+
+    where V[Q, :] is V_act[Q] flattened over (p, q),
+    Pi and SW are (n_act^2 x n_act^2) matrices over MO-pair indices.
+
+    Parameters
+    ----------
+    VQ_act : ndarray, complex128, shape (NQ, n_act, n_act)
+        Density-fitting integrals restricted to the active MO space.
+        Obtain by slicing VQ[0, :, active_mo_indices, :][:, :, active_mo_indices].
+    Pi_iw : ndarray, complex128, shape (niw, n_act, n_act, n_act, n_act)
+        Independent-particle polarizability in the active MO space on the
+        Matsubara frequency grid.
+    screened_W : ndarray, complex128, shape (niw, n_act, n_act, n_act, n_act)
+        Output of eval_screened_W_active: [I - (W Pi)^2]^{-1} W.
+
+    Returns
+    -------
+    result : ndarray, complex128, shape (niw, NQ, NQ)
+        V Pi SW Pi V evaluated at each frequency point.
+    """
+    niw   = Pi_iw.shape[0]
+    n_act = Pi_iw.shape[1]
+    n2    = n_act * n_act
+    NQ    = VQ_act.shape[0]
+
+    # Flatten V over MO-pair index: (NQ, n_act^2)
+    V_flat = VQ_act.reshape(NQ, n2)
+
+    result = np.zeros((niw, NQ, NQ), dtype=np.complex128)
+
+    for iw in range(niw):
+        Pi_mat = Pi_iw[iw].reshape(n2, n2)
+        SW_mat = screened_W[iw].reshape(n2, n2)
+
+        # V @ Pi: (NQ, n2) @ (n2, n2) -> (NQ, n2)
+        VPi = V_flat @ Pi_mat
+        # VPi @ SW: (NQ, n2) @ (n2, n2) -> (NQ, n2)
+        VPiSW = VPi @ SW_mat
+        # VPiSW @ Pi: (NQ, n2) @ (n2, n2) -> (NQ, n2)
+        VPiSWPi = VPiSW @ Pi_mat
+        # VPiSWPi @ V^†: (NQ, n2) @ (n2, NQ) -> (NQ, NQ)
+        result[iw] = VPiSWPi @ V_flat.conj().T
+
+    return result
+
+
+def eval_P_dressed(P0_iw):
+    """
+    Compute the dressed polarizability  P^{(0)} [I - 2 P^{(0)}]^{-1}
+    in the active MO space.
+
+    Treating MO-pair indices as a flat matrix index (same convention as
+    eval_screened_W_active and eval_VPiSWPiV), the expression at each
+    frequency point is:
+
+        result = Pi0 @ (I - 2 Pi0)^{-1}
+
+    implemented as the transposed linear solve
+
+        (I - 2 Pi0)^T result^T = Pi0^T
+
+    for numerical stability (avoids explicitly forming the inverse).
+
+    Parameters
+    ----------
+    Pi0_iw : ndarray, complex128, shape (niw, n_act, n_act, n_act, n_act)
+        Independent-particle polarizability in the active MO space on the
+        Matsubara frequency grid.
+
+    Returns
+    -------
+    result : ndarray, complex128, shape (niw, n_act, n_act, n_act, n_act)
+        P^{(0)} [I - 2 P^{(0)}]^{-1} at each frequency point.
+    """
+    niw  = P0_iw.shape[0]
+    orig_shape = P0_iw.shape[1:]        # whatever trailing shape Pi has
+
+    # Flatten to 2D matrix per frequency: (niw, m, m)
+    m    = int(np.prod(orig_shape) ** 0.5)  # m = n_aux or n_act²
+    P_2d = P0_iw.reshape(niw, m, m)
+    I    = np.eye(m, dtype=np.complex128)
+
+    result_2d = np.zeros((niw, m, m), dtype=np.complex128)
+
+    for iw in range(niw):
+        P = P_2d[iw]
+        A = I - 2.0 * P                # (I - 2 P^{(0)})
+        # result = P @ A^{-1}  ⟺  result^T = A^{-T} P^T
+        # Use lstsq for robustness when A is near-singular
+        result_2d[iw] = np.linalg.lstsq(A.T, P.T, rcond=None)[0].T
+
+    return result_2d.reshape(P0_iw.shape)
