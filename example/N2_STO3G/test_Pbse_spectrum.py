@@ -37,9 +37,9 @@ INT_PATH   = "df_hf_int/"
 IR_FILE    = "irgrid/1e5.h5"
 BETA       = 1000.0
 ITER       = -1
-ACTIVE_MOS = list(range(10))     # all 10 MOs — full active space
+ACTIVE_MOS = list(range(2,10))     # all 10 MOs — full active space
 
-ETA        = 0.01   # Lorentzian broadening (a.u.)
+ETA        = 0.001   # Lorentzian broadening (a.u.)
 OMEGA_MAX  = 1.5    # real-frequency plot range (a.u.)
 N_OMEGA    = 2000   # real-frequency grid points
 
@@ -171,8 +171,16 @@ for Q in top5:
     print(f"  Q={Q:3d}:  wp = {wp_arr[Q]:.4f} a.u. = {wp_arr[Q]*AU2EV:.3f} eV"
           f"   S = {S_arr[Q]:.4e}   res = {res_arr[Q]:.2e}")
 
+# Q-channels with the smallest (lowest-energy) pole positions
+valid_mask = ~np.isnan(wp_arr) & (np.abs(S_arr) > 1e-10)
+low_wp_idx = np.argsort(np.where(valid_mask, wp_arr, np.inf))[:8]
+print(f"\nQ-channels with lowest wp:")
+for Q in low_wp_idx:
+    print(f"  Q={Q:3d}:  wp = {wp_arr[Q]:.4f} a.u. = {wp_arr[Q]*AU2EV:.3f} eV"
+          f"   S = {S_arr[Q]:.4e}   res = {res_arr[Q]:.2e}")
+
 # ---------------------------------------------------------------------------
-# Plot A: diagonal P_BSE(iΩ) + plasmon-pole fits (imaginary axis)
+# Plot A: diagonal P_BSE(iΩ) + plasmon-pole fits — lowest-wp Q-channels
 # ---------------------------------------------------------------------------
 n_show = min(8, NQ)
 z_iw   = 1j * omega_pos
@@ -181,10 +189,10 @@ cmap   = plt.get_cmap("tab10")
 fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
 ax = axes[0]
-for i, Q in enumerate(sort_idx[:n_show]):
+for i, Q in enumerate(low_wp_idx):
     col = cmap(i % 10)
     ax.plot(omega_pos, diag_bse_pos[:, Q], color=col,
-            lw=1.5, label=f"Q={Q}")
+            lw=1.5, label=f"Q={Q}  wp={wp_arr[Q]*AU2EV:.2f} eV")
     if not np.isnan(wp_arr[Q]):
         fit_curve = plasmon_model(z_iw, Finf_arr[Q], S_arr[Q], wp_arr[Q]).real
         ax.plot(omega_pos, fit_curve, color=col, lw=1.0, ls="--", alpha=0.7)
@@ -212,7 +220,7 @@ for Q in range(NQ):
 
 ax.plot(omega_real, spectrum, color="steelblue", lw=1.5)
 
-for i, Q in enumerate(top5):
+for i, Q in enumerate(low_wp_idx):
     if np.isnan(wp_arr[Q]):
         continue
     ax.axvline(wp_arr[Q], color=cmap(i % 10), lw=1.0, ls="--", alpha=0.8,
