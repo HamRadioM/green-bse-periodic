@@ -696,153 +696,150 @@ class PolarizationSolver:
 
 def eval_W_MO_active(VQ, Pi_iw, active_mo_indices):
     """
-    Calculate the screened Coulomb interaction W in the active MO space.
+    Screened Coulomb W in the active MO space, resolved per k-point.
 
-    Mirrors the W construction in casidaEq.py but restricts all MO indices
-    to the supplied active-space window instead of the full occ/virt split.
+        W_k[p,q,r,s](iω) = Σ_Q  V_k[Q,p,q] V_k[Q,r,s]
+                          + Σ_{Q,P} V_k[Q,p,q] Π[Q,P](iω) V_k[P,r,s]
 
-    The formula at each frequency point is:
-
-        W[p,q,r,s] = sum_Q  V_act[Q,p,q] * V_act[Q,r,s]                (bare)
-                   + sum_{Q,P} V_act[Q,p,q] * Pi[Q,P] * V_act[P,r,s]  (screened)
-
-    where p,q,r,s ∈ active_mo_indices and Pi is the dressed polarizability
-    in the auxiliary Q-basis (unchanged from the full calculation).
+    where Π[Q,P](iω) is the full-system dressed polarizability in Q-space
+    (k-resolved only through V_k).
 
     Parameters
     ----------
-    VQ : ndarray, shape (1, NQ, nmo, nmo)
-        Two-electron integrals in the MO basis (output of casida.VQ_ao2mo).
+    VQ : ndarray, shape (nk, NQ, nmo, nmo)
+        Two-electron integrals in the MO basis per k-point.
+        (Output of casida.VQ_ao2mo; for a molecular calculation nk=1.)
     Pi_iw : ndarray, shape (niw, 1, NQ, NQ, 1)
-        Dressed polarizability in the auxiliary Q-basis on the Matsubara
-        frequency grid (tildeP_iw from BSESolver.prepare_interaction_matrices).
+        Dressed polarizability in the Q-basis on the bosonic Matsubara grid.
     active_mo_indices : array-like of int
         MO indices defining the active space.
 
     Returns
     -------
-    W_act : ndarray, complex128, shape (niw, n_act, n_act, n_act, n_act)
-        W_act[iw, p, q, r, s] is the screened Coulomb interaction at
-        frequency iw with all indices in the active space.
+    W_act : ndarray, complex128, shape (niw, nk, n_act, n_act, n_act, n_act)
+        W_act[iw, k, p, q, r, s] — W at frequency iw for k-point k,
+        all four indices in the active MO space.
     """
     active_mo_indices = np.asarray(active_mo_indices)
     n_act = len(active_mo_indices)
     niw   = Pi_iw.shape[0]
+    nk    = VQ.shape[0]
 
-    # Restrict VQ to the active MO subspace: (NQ, n_act, n_act)
-    VQ_act = VQ[0, :, :, :][:, active_mo_indices, :][:, :, active_mo_indices]
+    # Per-k slice: (nk, NQ, n_act, n_act)
+    VQ_act_k = VQ[:, :, active_mo_indices, :][:, :, :, active_mo_indices]
 
-    # Bare Coulomb term (frequency-independent): V[Q,p,q]*V[Q,r,s]
-    U_bare = np.einsum('qij,qkl->ijkl', VQ_act, VQ_act, optimize=True)
-
-    W_act = np.zeros((niw, n_act, n_act, n_act, n_act), dtype=np.complex128)
+    W_act = np.zeros((niw, nk, n_act, n_act, n_act, n_act), dtype=np.complex128)
 
     for iw in range(niw):
-        Pi = Pi_iw[iw, 0, :, :, 0]          # (NQ, NQ)
-        # Pi * V_act -> (NQ, n_act, n_act)
-        PV = np.einsum('qp,pkl->qkl', Pi, VQ_act, optimize=True)
-        # V_act * PV -> (n_act, n_act, n_act, n_act)
-        VPV = np.einsum('qij,qkl->ijkl', VQ_act, PV, optimize=True)
-        W_act[iw] = (U_bare + VPV).transpose(0,2,3,1)
+        Pi = Pi_iw[iw, 0, :, :, 0]                          # (NQ, NQ)
+        for ik in range(nk):
+            Vk     = VQ_act_k[ik]                            # (NQ, n_act, n_act)
+            U_bare = np.einsum('qij,qkl->ijkl', Vk, Vk, optimize=True)
+            PV     = np.einsum('qp,pkl->qkl',   Pi, Vk, optimize=True)
+            VPV    = np.einsum('qij,qkl->ijkl', Vk, PV, optimize=True)
+            W_act[iw, ik] = (U_bare + VPV).transpose(0, 2, 3, 1)
 
     return W_act
 
 
 def eval_screened_W_active(W_act, Pi_iw):
     """
-    Compute the BSE kernel  [I - (W Pi)^2]^{-1} W  in the active MO space.
+    BSE kernel  [I - (W_k Pi_k)^2]^{-1} W_k  in the active MO space, per k-point.
 
     W and Pi are treated as matrices over MO-pair indices:
         M_{(p,q),(r,s)}  ↔  M[p, q, r, s]
-    so the matrix product (WPi) contracts the (r,s) legs of W against the
-    (p,q) legs of Pi.
 
-    At each frequency point:
-        WPi    = W  @ Pi              (n_act^2 × n_act^2 matrix product)
-        result = (I - WPi @ WPi)^{-1} W
+    At each (frequency, k) point:
+        WPi    = W_k  @ Pi_k
+        result = (I - WPi @ WPi)^{-1} W_k
 
     Parameters
     ----------
-    W_act : ndarray, complex128, shape (niw, n_act, n_act, n_act, n_act)
-        Screened Coulomb interaction in the active MO space (from eval_W_MO_active).
-    Pi_iw : ndarray, complex128, shape (niw, n_act, n_act, n_act, n_act)
-        Independent-particle polarizability in the active MO space on the
-        Matsubara frequency grid.
+    W_act : ndarray, complex128, shape (niw, nk, n_act, n_act, n_act, n_act)
+        Per-k screened Coulomb in the active MO space (from eval_W_MO_active).
+    Pi_iw : ndarray, complex128, shape (niw, ns, nk, n_act, n_act, n_act, n_act)
+        or (niw, nk, n_act, n_act, n_act, n_act)
+        Per-k independent-particle polarizability (spin-summed or spin-resolved).
+        If spin-resolved the s=0 slice is used (spin-restricted convention).
 
     Returns
     -------
-    result : ndarray, complex128, shape (niw, n_act, n_act, n_act, n_act)
-        [I - (W Pi)^2]^{-1} W evaluated at each frequency point.
+    result : ndarray, complex128, shape (niw, nk, n_act, n_act, n_act, n_act)
+        [I - (W_k Pi_k)^2]^{-1} W_k for each (iw, k).
     """
     niw   = W_act.shape[0]
-    n_act = W_act.shape[1]
+    nk    = W_act.shape[1]
+    n_act = W_act.shape[2]
     n2    = n_act * n_act
     I     = np.eye(n2, dtype=np.complex128)
+
+    # Accept (niw, ns, nk, ...) or (niw, nk, ...) for Pi
+    if Pi_iw.ndim == 7:          # (niw, ns, nk, n_act, n_act, n_act, n_act)
+        Pi_use = Pi_iw[:, 0]     # take s=0; shape (niw, nk, n_act, n_act, n_act, n_act)
+    else:
+        Pi_use = Pi_iw           # already (niw, nk, ...)
 
     result = np.zeros_like(W_act)
 
     for iw in range(niw):
-        W_mat  = W_act[iw].reshape(n2, n2)
-        Pi_mat = Pi_iw[iw].reshape(n2, n2)
-
-        WPi  = W_mat @ Pi_mat
-        WPi2 = WPi @ WPi                          # (W Pi)^2
-
-        result[iw] = np.linalg.solve(I - WPi2, W_mat).reshape(n_act, n_act, n_act, n_act)
+        for ik in range(nk):
+            W_mat  = W_act[iw, ik].reshape(n2, n2)
+            Pi_mat = Pi_use[iw, ik].reshape(n2, n2)
+            WPi    = W_mat @ Pi_mat
+            WPi2   = WPi @ WPi
+            result[iw, ik] = np.linalg.solve(
+                I - WPi2, W_mat
+            ).reshape(n_act, n_act, n_act, n_act)
 
     return result
 
 
-def eval_VPiSWPiV(VQ_act, Pi_iw, screened_W):
+def eval_VPiSWPiV(VQ_act_k, Pi_iw_k, screened_W):
     """
-    Compute the contraction  V Pi (screened_W) Pi V  in the auxiliary Q-basis.
+    Contraction  V_k Pi_k (screened_W_k) Pi_k V_k†  per k-point in Q-space.
 
-    All MO-pair indices are treated as flat vectors so the expression becomes
-    a sequence of matrix multiplications:
+        result_k[Q, Q'](iω) = V_k[Q,:] @ Pi_k @ SW_k @ Pi_k @ V_k†[:,Q']
 
-        result[Q, Q'] = V[Q, :] @ Pi @ SW @ Pi @ V[Q', :].conj()
-
-    where V[Q, :] is V_act[Q] flattened over (p, q),
-    Pi and SW are (n_act^2 x n_act^2) matrices over MO-pair indices.
+    where the MO-pair index is flattened and all operations are matrix products.
 
     Parameters
     ----------
-    VQ_act : ndarray, complex128, shape (NQ, n_act, n_act)
-        Density-fitting integrals restricted to the active MO space.
-        Obtain by slicing VQ[0, :, active_mo_indices, :][:, :, active_mo_indices].
-    Pi_iw : ndarray, complex128, shape (niw, n_act, n_act, n_act, n_act)
-        Independent-particle polarizability in the active MO space on the
-        Matsubara frequency grid.
-    screened_W : ndarray, complex128, shape (niw, n_act, n_act, n_act, n_act)
-        Output of eval_screened_W_active: [I - (W Pi)^2]^{-1} W.
+    VQ_act_k : ndarray, complex128, shape (nk, NQ, n_act, n_act)
+        Per-k DF integrals restricted to the active MO space.
+    Pi_iw_k : ndarray, complex128, shape (niw, ns, nk, n_act, n_act, n_act, n_act)
+        or (niw, nk, n_act, n_act, n_act, n_act)
+        Per-(iω, k) polarizability; if spin-resolved the s=0 slice is used.
+    screened_W : ndarray, complex128, shape (niw, nk, n_act, n_act, n_act, n_act)
+        Output of eval_screened_W_active.
 
     Returns
     -------
-    result : ndarray, complex128, shape (niw, NQ, NQ)
-        V Pi SW Pi V evaluated at each frequency point.
+    result : ndarray, complex128, shape (niw, nk, NQ, NQ)
+        V_k Pi_k SW_k Pi_k V_k† for each (iω, k).
     """
-    niw   = Pi_iw.shape[0]
-    n_act = Pi_iw.shape[1]
+    nk    = VQ_act_k.shape[0]
+    NQ    = VQ_act_k.shape[1]
+    n_act = VQ_act_k.shape[2]
     n2    = n_act * n_act
-    NQ    = VQ_act.shape[0]
+    niw   = screened_W.shape[0]
 
-    # Flatten V over MO-pair index: (NQ, n_act^2)
-    V_flat = VQ_act.reshape(NQ, n2)
+    # Accept (niw, ns, nk, ...) or (niw, nk, ...) for Pi
+    if Pi_iw_k.ndim == 7:
+        Pi_use = Pi_iw_k[:, 0]    # (niw, nk, n_act, n_act, n_act, n_act)
+    else:
+        Pi_use = Pi_iw_k
 
-    result = np.zeros((niw, NQ, NQ), dtype=np.complex128)
+    V_flat_k = VQ_act_k.reshape(nk, NQ, n2)     # (nk, NQ, n2)
+
+    result = np.zeros((niw, nk, NQ, NQ), dtype=np.complex128)
 
     for iw in range(niw):
-        Pi_mat = Pi_iw[iw].reshape(n2, n2)
-        SW_mat = screened_W[iw].reshape(n2, n2)
-
-        # V @ Pi: (NQ, n2) @ (n2, n2) -> (NQ, n2)
-        VPi = V_flat @ Pi_mat
-        # VPi @ SW: (NQ, n2) @ (n2, n2) -> (NQ, n2)
-        VPiSW = VPi @ SW_mat
-        # VPiSW @ Pi: (NQ, n2) @ (n2, n2) -> (NQ, n2)
-        VPiSWPi = VPiSW @ Pi_mat
-        # VPiSWPi @ V^†: (NQ, n2) @ (n2, NQ) -> (NQ, NQ)
-        result[iw] = VPiSWPi @ V_flat.conj().T
+        for ik in range(nk):
+            Vk     = V_flat_k[ik]                         # (NQ, n2)
+            Pi_mat = Pi_use[iw, ik].reshape(n2, n2)
+            SW_mat = screened_W[iw, ik].reshape(n2, n2)
+            VPiSWPi = Vk @ Pi_mat @ SW_mat @ Pi_mat
+            result[iw, ik] = VPiSWPi @ Vk.conj().T
 
     return result
 
@@ -851,12 +848,12 @@ def eval_Pph(VQ_act_k, Pi_iw_k, W_iw):
     """
     Particle-hole attraction kernel P^ph in the Q-space auxiliary basis.
 
-        P^ph(q, iω)[Q,Q'] = (1/Nk) Σ_{s,k}
+        P^ph(q, iω, s, k)[Q,Q'] =
             V_k[Q,:] @ (I + Π_{s,k}(iω) W(iω))^{-1} @ Π_{s,k}(iω) @ V_k†[:,Q']
 
-    The k-sum is averaged (factor 1/Nk).  The spin sum is a plain sum — for
-    spin-restricted calculations (ns=1) multiply the output by 2 externally
-    if spin degeneracy is required.
+    The k and spin indices are kept uncontracted in the output.  To obtain
+    the full Q-space P^ph, sum over s and k and divide by Nk externally:
+        P^ph_full[iw] = (1/Nk) Σ_{s,k} P_ph[iw, s, k]
 
     Conventions for shapes
     ----------------------
@@ -875,7 +872,9 @@ def eval_Pph(VQ_act_k, Pi_iw_k, W_iw):
 
     Returns
     -------
-    P_ph : (niw, NQ, NQ) complex128
+    P_ph : (niw, ns, nk, NQ, NQ) complex128
+        Per-(spin, k) particle-hole kernel.  Sum over s and k (divide by nk)
+        to get the full Q-space kernel before passing to eval_PBSE.
     """
     # --- normalise V ---
     if VQ_act_k.ndim == 2:                          # (NQ, n2) molecular shorthand
@@ -896,7 +895,7 @@ def eval_Pph(VQ_act_k, Pi_iw_k, W_iw):
     W = W_iw.reshape(niw, n2, n2)                  # (niw, n2, n2)
 
     I_n   = np.eye(n2, dtype=np.complex128)
-    P_ph  = np.zeros((niw, NQ, NQ), dtype=np.complex128)
+    P_ph  = np.zeros((niw, ns, nk, NQ, NQ), dtype=np.complex128)
 
     for iw in range(niw):
         W_mat = W[iw]                               # (n2, n2)
@@ -905,11 +904,9 @@ def eval_Pph(VQ_act_k, Pi_iw_k, W_iw):
                 Pi_k = Pi[iw, s, ik]               # (n2, n2)
                 Vk   = V[ik]                        # (NQ, n2)
                 A    = I_n + Pi_k @ W_mat           # (I + Π_k W)
-                # Solve A x = Π_k V_k†  so that  V_k @ x = V_k (I+ΠW)^{-1} Π V_k†
                 x    = np.linalg.solve(A, Pi_k @ Vk.conj().T)   # (n2, NQ)
-                P_ph[iw] += Vk @ x                 # (NQ, NQ)
+                P_ph[iw, s, ik] = Vk @ x           # (NQ, NQ)
 
-    P_ph /= nk          # k-average (spin sum is kept as-is)
     return P_ph
 
 

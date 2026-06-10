@@ -105,22 +105,24 @@ for label, mo_idx in ACTIVE_SPACES:
     )   # (niw, ns, nk, n_act, n_act, n_act, n_act)
     Pi0_iw_k = Pi0_iw_skp.reshape(niw, ns_loc, nk_loc, n2, n2)  # (niw, ns, nk, n2, n2)
 
-    # W in active MO space (uses k-averaged tildeP_iw)
-    W_act = eval_W_MO_active(VQ_mo, tildeP_iw, mo_idx)  # (niw, n_act,n_act,n_act,n_act)
-    W_mat = W_act.reshape(niw, n2, n2)                   # (niw, n2, n2)
+    # W in active MO space — per k-point: (niw, nk, n_act, n_act, n_act, n_act)
+    W_act_k = eval_W_MO_active(VQ_mo, tildeP_iw, mo_idx)
+    W_mat_k = W_act_k.reshape(niw, nk_loc, n2, n2)      # (niw, nk, n2, n2)
 
     # V projection matrix — (nk, NQ, n_act, n_act); nk=1 for this molecular example
-    VQ_act_k = np.stack(
-        [VQ_mo[0, :, :, :][:, mo_idx, :][:, :, mo_idx]]
-        * nk_loc, axis=0
-    )   # (nk, NQ, n_act, n_act)
-    V_flat = VQ_act_k[0].reshape(NQ, n2)   # (NQ, n2), for back-projection
+    VQ_act_k = VQ_mo[:, :, mo_idx, :][:, :, :, mo_idx]  # (nk, NQ, n_act, n_act)
+    V_flat = VQ_act_k[0].reshape(NQ, n2)                 # (NQ, n2), for back-projection
 
-    # P^ph and P^BSE — use library functions from polarization.py
-    P_ph  = eval_Pph(VQ_act_k, Pi0_iw_k, W_mat)   # (niw, NQ, NQ)
-    P_bse = eval_PBSE(P_ph)                         # (niw, NQ, NQ)
+    # P^ph: (niw, ns, nk, NQ, NQ) — k/spin resolved, no averaging yet
+    # W passed as (niw, n2, n2): use k=0 slice for nk=1; for multi-k pass full W_mat_k
+    P_ph_k = eval_Pph(VQ_act_k, Pi0_iw_k, W_mat_k[:, 0])   # (niw, ns, nk, NQ, NQ)
 
-    Pph_mid  = P_ph[iw_mid].real
+    # k-sum and spin-sum → full Q-space P^ph for the Dyson equation
+    P_ph_full = P_ph_k.sum(axis=(1, 2)) / nk_loc           # (niw, NQ, NQ)
+
+    P_bse = eval_PBSE(P_ph_full)                            # (niw, NQ, NQ)
+
+    Pph_mid  = P_ph_full[iw_mid].real
     Pbse_mid = P_bse[iw_mid].real
 
     panels.append((label, mo_idx, Pph_mid, Pbse_mid))
@@ -131,8 +133,8 @@ for label, mo_idx in ACTIVE_SPACES:
         loc7 = list(mo_idx).index(7)
         flat_67 = loc6 * n_act + loc7
         flat_76 = loc7 * n_act + loc6
-        Pph_MO  = (V_flat.conj().T @ P_ph[iw_mid]  @ V_flat).real
-        Pbse_MO = (V_flat.conj().T @ P_bse[iw_mid] @ V_flat).real
+        Pph_MO  = (V_flat.conj().T @ P_ph_full[iw_mid] @ V_flat).real
+        Pbse_MO = (V_flat.conj().T @ P_bse[iw_mid]     @ V_flat).real
         print(f"  V P^ph  V [(6,7),(7,6)] = {Pph_MO[flat_67, flat_76]:.6e}")
         print(f"  V P^BSE V [(6,7),(7,6)] = {Pbse_MO[flat_67, flat_76]:.6e}")
 
