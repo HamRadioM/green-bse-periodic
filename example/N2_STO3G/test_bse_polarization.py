@@ -95,15 +95,12 @@ for label, mo_idx in ACTIVE_SPACES:
     for t in range(ntau // 2):
         Pi0_tau[ntau - t - 1] = Pi0_tau[t]
 
-    # FT each (s, k) slice to frequency; keep full (niw, ns, nk, ...) layout
+    # FT: collapse (ns, nk) into a batch dimension, transform, then restore
     ns_loc = Pi0_tau.shape[1]
     nk_loc = Pi0_tau.shape[2]
-    Pi0_iw_skp = np.stack(
-        [[ir.tauf_to_wb(Pi0_tau[:, s, k]) for k in range(nk_loc)]
-         for s in range(ns_loc)],
-        axis=1,
-    )   # (niw, ns, nk, n_act, n_act, n_act, n_act)
-    Pi0_iw_k = Pi0_iw_skp.reshape(niw, ns_loc, nk_loc, n2, n2)  # (niw, ns, nk, n2, n2)
+    Pi0_tau_flat = Pi0_tau.reshape(ntau, ns_loc * nk_loc, n_act, n_act, n_act, n_act)
+    Pi0_iw_flat  = ir.tauf_to_wb(Pi0_tau_flat)
+    Pi0_iw_k     = Pi0_iw_flat.reshape(niw, ns_loc, nk_loc, n2, n2)
 
     # W in active MO space — per k-point: (niw, nk, n_act, n_act, n_act, n_act)
     W_act_k = eval_W_MO_active(VQ_mo, tildeP_iw, mo_idx)
