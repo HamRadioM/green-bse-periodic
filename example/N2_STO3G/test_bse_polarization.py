@@ -14,14 +14,14 @@ import sys
 import numpy as np
 import h5py
 import matplotlib.pyplot as plt
-from scipy.linalg import inv as spinv, solve
+from scipy.linalg import inv as spinv
 
 sys.path.insert(0, "/Users/wenming/green-bse-periodic/green-bse-periodic-bse-solver/green_bse")
 
 import casidaEq as casida
 import gwtool
 from irFT import IR_factory
-from polarization import eval_W_MO_active, eval_screened_W_active
+from polarization import eval_W_MO_active, eval_Pph, eval_PBSE
 
 # ---------------------------------------------------------------------------
 # Paths & parameters
@@ -78,45 +78,6 @@ tildeP_raw = 0.5 * (tildeP_raw + tildeP_raw.conj().transpose(0, 1, 2, 4, 3))
 tildeP_iw  = tildeP_raw[:, :, 0, :, :][:, :, :, :, np.newaxis]   # (niw,1,NQ,NQ,1)
 
 
-def eval_Pph(V_flat, Pi_iw, W_iw):
-    """
-    P^ph[iw] = V_flat @ (I + Pi[iw] @ W[iw])^{-1} @ Pi[iw] @ V_flat†
-
-    Args:
-        V_flat : (NQ, n2)     real or complex
-        Pi_iw  : (niw, n2, n2)
-        W_iw   : (niw, n2, n2)
-
-    Returns:
-        P_ph   : (niw, NQ, NQ) complex
-    """
-    niw_loc = Pi_iw.shape[0]
-    n2  = V_flat.shape[1]
-    I_n = np.eye(n2, dtype=np.complex128)
-    P_ph = np.zeros((niw_loc, NQ, NQ), dtype=np.complex128)
-    for iw in range(niw_loc):
-        Pi  = Pi_iw[iw]                        # (n2, n2)
-        W   = W_iw[iw]                         # (n2, n2)
-        A   = I_n + Pi @ W                     # (I + Π W)
-        PiV = solve(A, Pi @ V_flat.conj().T)   # (I + Π W)^{-1} Π V†, shape (n2, NQ)
-        P_ph[iw] = V_flat @ PiV               # (NQ, NQ)
-    return P_ph
-
-
-def eval_PBSE(P_ph_iw):
-    """
-    P^BSE[iw] = (I - P^ph[iw])^{-1} P^ph[iw]   [Dyson in Q-space]
-    """
-    niw_loc = P_ph_iw.shape[0]
-    NQ_loc  = P_ph_iw.shape[1]
-    I_q     = np.eye(NQ_loc, dtype=np.complex128)
-    P_bse   = np.zeros_like(P_ph_iw)
-    for iw in range(niw_loc):
-        Ph  = P_ph_iw[iw]
-        P_bse[iw] = solve(I_q - Ph, Ph)
-    return P_bse
-
-
 # ---------------------------------------------------------------------------
 # Loop over active spaces
 # ---------------------------------------------------------------------------
@@ -128,24 +89,36 @@ for label, mo_idx in ACTIVE_SPACES:
     print(f"\nActive space {mo_idx}  (n_act={n_act})")
 
     # Pi0 in active MO space (tau → freq)
+    # eval_Pi0_MO_active returns (ntau, ns, nk, n_act, n_act, n_act, n_act)
     Pi0_tau = gwtool.eval_Pi0_MO_active(ITER, mo_idx, input_h5=INPUT_H5, sim_h5=SIM_H5)
     ntau = Pi0_tau.shape[0]
     for t in range(ntau // 2):
-        Pi0_tau[ntau - t - 1, :, :] = Pi0_tau[t, :, :]
-    Pi0_iw = ir.tauf_to_wb(Pi0_tau[:, 0, 0])    # (niw, n_act, n_act, n_act, n_act)
-    Pi0_mat = Pi0_iw.reshape(niw, n2, n2)        # (niw, n2, n2)
+        Pi0_tau[ntau - t - 1] = Pi0_tau[t]
 
-    # W in active MO space
-    W_act = eval_W_MO_active(VQ_mo, tildeP_iw, mo_idx)   # (niw, n_act,n_act,n_act,n_act)
-    W_mat = W_act.reshape(niw, n2, n2)
+    # FT each (s, k) slice to frequency; keep full (niw, ns, nk, ...) layout
+    ns_loc = Pi0_tau.shape[1]
+    nk_loc = Pi0_tau.shape[2]
+    Pi0_iw_skp = np.stack(
+        [[ir.tauf_to_wb(Pi0_tau[:, s, k]) for k in range(nk_loc)]
+         for s in range(ns_loc)],
+        axis=1,
+    )   # (niw, ns, nk, n_act, n_act, n_act, n_act)
+    Pi0_iw_k = Pi0_iw_skp.reshape(niw, ns_loc, nk_loc, n2, n2)  # (niw, ns, nk, n2, n2)
 
-    # V projection matrix
-    VQ_act = VQ_mo[0, :, :, :][:, mo_idx, :][:, :, mo_idx]   # (NQ, n_act, n_act)
-    V_flat = VQ_act.reshape(NQ, n2)                            # (NQ, n2)
+    # W in active MO space (uses k-averaged tildeP_iw)
+    W_act = eval_W_MO_active(VQ_mo, tildeP_iw, mo_idx)  # (niw, n_act,n_act,n_act,n_act)
+    W_mat = W_act.reshape(niw, n2, n2)                   # (niw, n2, n2)
 
-    # P^ph and P^BSE
-    P_ph  = eval_Pph(V_flat, Pi0_mat, W_mat)    # (niw, NQ, NQ)
-    P_bse = eval_PBSE(P_ph)                      # (niw, NQ, NQ)
+    # V projection matrix — (nk, NQ, n_act, n_act); nk=1 for this molecular example
+    VQ_act_k = np.stack(
+        [VQ_mo[0, :, :, :][:, mo_idx, :][:, :, mo_idx]]
+        * nk_loc, axis=0
+    )   # (nk, NQ, n_act, n_act)
+    V_flat = VQ_act_k[0].reshape(NQ, n2)   # (NQ, n2), for back-projection
+
+    # P^ph and P^BSE — use library functions from polarization.py
+    P_ph  = eval_Pph(VQ_act_k, Pi0_iw_k, W_mat)   # (niw, NQ, NQ)
+    P_bse = eval_PBSE(P_ph)                         # (niw, NQ, NQ)
 
     Pph_mid  = P_ph[iw_mid].real
     Pbse_mid = P_bse[iw_mid].real

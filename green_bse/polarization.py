@@ -847,6 +847,99 @@ def eval_VPiSWPiV(VQ_act, Pi_iw, screened_W):
     return result
 
 
+def eval_Pph(VQ_act_k, Pi_iw_k, W_iw):
+    """
+    Particle-hole attraction kernel P^ph in the Q-space auxiliary basis.
+
+        P^ph(q, iω)[Q,Q'] = (1/Nk) Σ_{s,k}
+            V_k[Q,:] @ (I + Π_{s,k}(iω) W(iω))^{-1} @ Π_{s,k}(iω) @ V_k†[:,Q']
+
+    The k-sum is averaged (factor 1/Nk).  The spin sum is a plain sum — for
+    spin-restricted calculations (ns=1) multiply the output by 2 externally
+    if spin degeneracy is required.
+
+    Conventions for shapes
+    ----------------------
+    VQ_act_k : (..., nk, NQ, n_act, n_act) or (nk, NQ, n2)
+        DF integrals for each k-point restricted to the active MO pairs.
+        For the molecular Gamma-only case pass shape (1, NQ, n2) or
+        simply the 2D (NQ, n2) array — it will be promoted to nk=1 internally.
+    Pi_iw_k  : (niw, ns, nk, n_act, n_act, n_act, n_act) or (niw, ns, nk, n2, n2)
+        Per-(iω, spin, k) independent-particle polarizability in active MO-pair
+        space on the bosonic Matsubara grid.  For the molecular Gamma-only case
+        pass shape (niw, 1, 1, n2, n2) or the squeezed (niw, n2, n2) —
+        the latter will be promoted to ns=1, nk=1 internally.
+    W_iw     : (niw, n_act, n_act, n_act, n_act) or (niw, n2, n2)
+        k-averaged screened Coulomb in active MO-pair space (output of
+        eval_W_MO_active with the screened full-system polarizability).
+
+    Returns
+    -------
+    P_ph : (niw, NQ, NQ) complex128
+    """
+    # --- normalise V ---
+    if VQ_act_k.ndim == 2:                          # (NQ, n2) molecular shorthand
+        VQ_act_k = VQ_act_k[np.newaxis]             # → (1, NQ, n2)
+    nk = VQ_act_k.shape[0]
+    NQ = VQ_act_k.shape[1]
+    n2 = int(np.prod(VQ_act_k.shape[2:]))
+    V  = VQ_act_k.reshape(nk, NQ, n2)              # (nk, NQ, n2)
+
+    # --- normalise Pi ---
+    if Pi_iw_k.ndim == 3:                           # (niw, n2, n2) molecular shorthand
+        Pi_iw_k = Pi_iw_k[:, np.newaxis, np.newaxis]   # → (niw, 1, 1, n2, n2)
+    niw = Pi_iw_k.shape[0]
+    ns  = Pi_iw_k.shape[1]
+    Pi  = Pi_iw_k.reshape(niw, ns, nk, n2, n2)     # (niw, ns, nk, n2, n2)
+
+    # --- normalise W ---
+    W = W_iw.reshape(niw, n2, n2)                  # (niw, n2, n2)
+
+    I_n   = np.eye(n2, dtype=np.complex128)
+    P_ph  = np.zeros((niw, NQ, NQ), dtype=np.complex128)
+
+    for iw in range(niw):
+        W_mat = W[iw]                               # (n2, n2)
+        for s in range(ns):
+            for ik in range(nk):
+                Pi_k = Pi[iw, s, ik]               # (n2, n2)
+                Vk   = V[ik]                        # (NQ, n2)
+                A    = I_n + Pi_k @ W_mat           # (I + Π_k W)
+                # Solve A x = Π_k V_k†  so that  V_k @ x = V_k (I+ΠW)^{-1} Π V_k†
+                x    = np.linalg.solve(A, Pi_k @ Vk.conj().T)   # (n2, NQ)
+                P_ph[iw] += Vk @ x                 # (NQ, NQ)
+
+    P_ph /= nk          # k-average (spin sum is kept as-is)
+    return P_ph
+
+
+def eval_PBSE(P_ph_iw):
+    """
+    BSE polarizability via the Dyson equation in the Q-space auxiliary basis.
+
+        P^BSE(iω) = (I - P^ph(iω))^{-1} P^ph(iω)
+
+    This is a Dyson-type resummation of the particle-hole ladder diagrams
+    encoded in P^ph.
+
+    Parameters
+    ----------
+    P_ph_iw : (niw, NQ, NQ) complex128
+        Particle-hole kernel from eval_Pph.
+
+    Returns
+    -------
+    P_bse : (niw, NQ, NQ) complex128
+    """
+    niw, NQ, _ = P_ph_iw.shape
+    I_q  = np.eye(NQ, dtype=np.complex128)
+    P_bse = np.zeros_like(P_ph_iw)
+    for iw in range(niw):
+        Ph = P_ph_iw[iw]
+        P_bse[iw] = np.linalg.solve(I_q - Ph, Ph)
+    return P_bse
+
+
 def eval_P_dressed(P0_iw):
     """
     Compute the dressed polarizability  P^{(0)} [I - 2 P^{(0)}]^{-1}
