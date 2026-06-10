@@ -5,10 +5,10 @@ BSE spectrum via plasmon-pole fitting on N2/STO-3G.
 Pipeline:
   1. Full active space (all 10 MOs)
   2. P^ph and P^BSE at all bosonic Matsubara frequencies
-  3. Diagonalise P^BSE at each iΩ → eigenvalue series per mode
-  4. Fit each mode with a single plasmon-pole model (positive Ω half only)
+  3. Take the diagonal P^BSE[Q,Q](iΩ) — each Q-channel is a bosonic response
+  4. Fit each diagonal element with a single plasmon-pole model (positive Ω half)
   5. Plot:
-       (a) eigenvalue curves + model fits on the imaginary-frequency axis
+       (a) diagonal curves + model fits on the imaginary-frequency axis
        (b) broadened absorption spectrum on the real-frequency axis
 """
 
@@ -130,121 +130,102 @@ P_bse    = eval_PBSE(P_ph)                                # (niw, NQ, NQ)
 print(f"  P_bse shape: {P_bse.shape}")
 
 # ---------------------------------------------------------------------------
-# Diagonalise P^BSE at each frequency → eigenvalue series (niw, NQ)
+# Take diagonal of P^BSE: P_BSE[iw, Q, Q]  →  shape (niw, NQ)
+# Use the positive-frequency half for fitting
 # ---------------------------------------------------------------------------
-print("Diagonalising P^BSE at each frequency...")
-eigs_all = np.array([np.linalg.eigvalsh(P_bse[iw].real) for iw in range(niw)])
-# eigvalsh sorts ascending; at Ω≈0 the most-negative eigenvalue = dominant mode
-# Shape: (niw, NQ)
+diag_bse_all = np.array([np.diag(P_bse[iw].real) for iw in range(niw)])  # (niw, NQ)
+diag_bse_pos = diag_bse_all[pos_mask]                                      # (n_pos, NQ)
 
-eigs_pos = eigs_all[pos_mask]    # (n_pos, NQ)
-n_pos    = eigs_pos.shape[0]
+iw_mid = np.argmin(np.abs(omega_n))   # index closest to Ω=0
 
-# Sort modes by |eigenvalue| at Ω=0 (iw_mid) — largest first
-iw_mid  = np.argmin(np.abs(omega_n))   # index closest to Ω=0
-sort_idx = np.argsort(np.abs(eigs_all[iw_mid]))[::-1]
-eigs_all_sorted = eigs_all[:, sort_idx]
-eigs_pos_sorted = eigs_pos[:, sort_idx[:NQ]]
+# Sort Q-channels by |diagonal at Ω≈0| for display
+sort_idx = np.argsort(np.abs(diag_bse_all[iw_mid]))[::-1]
 
 # ---------------------------------------------------------------------------
-# Plasmon-pole fit for each mode
+# Plasmon-pole fit for each Q-channel diagonal
 # ---------------------------------------------------------------------------
-print("Fitting plasmon-pole models...")
-wp_list    = []
-S_list     = []
-Finf_list  = []
-res_list   = []
+print("Fitting plasmon-pole model to each P_BSE diagonal element...")
+wp_arr   = np.full(NQ, np.nan)
+S_arr    = np.zeros(NQ)
+Finf_arr = np.zeros(NQ)
+res_arr  = np.full(NQ, np.nan)
 
-for mode in range(NQ):
-    curve = eigs_pos_sorted[:, mode]
-    Finf  = float(curve[-1])   # high-Ω limit
-    F0    = float(curve[0])    # Ω≈0 value
+for Q in range(NQ):
+    curve = diag_bse_pos[:, Q]
+    Finf  = float(curve[-1])
+    F0    = float(curve[0])
+    if abs(F0 - Finf) < 1e-12:
+        continue
     try:
         fit = fit_plasmon_pole(omega_pos, curve, F0=F0, Finf=Finf)
-        wp_list.append(fit['wp'])
-        S_list.append(fit['S'])
-        Finf_list.append(fit['Finf'])
-        res_list.append(fit['residual_norm'])
+        wp_arr[Q]   = fit['wp']
+        S_arr[Q]    = fit['S']
+        Finf_arr[Q] = fit['Finf']
+        res_arr[Q]  = fit['residual_norm']
     except Exception as e:
-        print(f"  Mode {mode} fit failed: {e}")
-        wp_list.append(np.nan)
-        S_list.append(0.0)
-        Finf_list.append(Finf)
-        res_list.append(np.nan)
+        print(f"  Q={Q} fit failed: {e}")
 
-wp_arr  = np.array(wp_list)
-S_arr   = np.array(S_list)
-Finf_arr = np.array(Finf_list)
-
-print(f"\nTop-5 modes by |S|:")
 top5 = np.argsort(np.abs(S_arr))[::-1][:5]
-for i in top5:
-    print(f"  mode {i:3d}:  wp = {wp_arr[i]:.4f} a.u. = {wp_arr[i]*AU2EV:.3f} eV"
-          f"   S = {S_arr[i]:.4e}   res = {res_list[i]:.2e}")
+print(f"\nTop-5 Q-channels by |S|:")
+for Q in top5:
+    print(f"  Q={Q:3d}:  wp = {wp_arr[Q]:.4f} a.u. = {wp_arr[Q]*AU2EV:.3f} eV"
+          f"   S = {S_arr[Q]:.4e}   res = {res_arr[Q]:.2e}")
 
 # ---------------------------------------------------------------------------
-# Plot A: eigenvalue curves + plasmon-pole fits (imaginary axis)
+# Plot A: diagonal P_BSE(iΩ) + plasmon-pole fits (imaginary axis)
 # ---------------------------------------------------------------------------
 n_show = min(8, NQ)
 z_iw   = 1j * omega_pos
+cmap   = plt.get_cmap("tab10")
 
 fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
 ax = axes[0]
-cmap = plt.get_cmap("tab10")
-for mi in range(n_show):
-    col = cmap(mi % 10)
-    ax.plot(omega_pos, eigs_pos_sorted[:, mi], color=col,
-            lw=1.5, label=f"mode {mi}")
-    if not np.isnan(wp_arr[mi]):
-        fit_curve = plasmon_model(z_iw, Finf_arr[mi], S_arr[mi], wp_arr[mi]).real
+for i, Q in enumerate(sort_idx[:n_show]):
+    col = cmap(i % 10)
+    ax.plot(omega_pos, diag_bse_pos[:, Q], color=col,
+            lw=1.5, label=f"Q={Q}")
+    if not np.isnan(wp_arr[Q]):
+        fit_curve = plasmon_model(z_iw, Finf_arr[Q], S_arr[Q], wp_arr[Q]).real
         ax.plot(omega_pos, fit_curve, color=col, lw=1.0, ls="--", alpha=0.7)
 
 ax.set_xlabel(r"$\Omega_n$  (a.u.)", fontsize=11)
-ax.set_ylabel(r"Eigenvalue of $P^\mathrm{BSE}(i\Omega_n)$", fontsize=11)
-ax.set_title(f"P^BSE eigenvalues — all {n_act} MOs  (solid: data, dashed: fit)",
+ax.set_ylabel(r"$P^\mathrm{BSE}_{QQ}(i\Omega_n)$", fontsize=11)
+ax.set_title(f"P^BSE diagonal — all {n_act} MOs  (solid: data, dashed: fit)",
              fontsize=10)
 ax.set_xscale("log")
 ax.axhline(0, color="k", lw=0.5, ls=":")
 ax.legend(fontsize=7, ncol=2)
 
 # ---------------------------------------------------------------------------
-# Plot B: absorption spectrum — Lorentzian peaks at pole positions
+# Plot B: absorption spectrum
+#   A(ω) = Σ_Q  S_Q · η / π / [(ω - wp_Q)² + η²]
 # ---------------------------------------------------------------------------
 ax = axes[1]
 omega_real = np.linspace(0.0, OMEGA_MAX, N_OMEGA)
 spectrum   = np.zeros(N_OMEGA)
 
-for mi in range(NQ):
-    if np.isnan(wp_arr[mi]) or wp_arr[mi] < 1e-6:
+for Q in range(NQ):
+    if np.isnan(wp_arr[Q]) or wp_arr[Q] < 1e-6 or abs(S_arr[Q]) < 1e-10:
         continue
-    # Spectral function from analytic continuation of plasmon pole:
-    # -Im P(ω+iη) ∝ S * η / ((ω-wp)^2 + η^2)  (Lorentzian at ω=wp)
-    # Only include modes with non-negligible weight
-    if abs(S_arr[mi]) < 1e-8:
-        continue
-    spectrum += S_arr[mi] * ETA / ((omega_real - wp_arr[mi])**2 + ETA**2) / np.pi
+    spectrum += S_arr[Q] * ETA / ((omega_real - wp_arr[Q])**2 + ETA**2) / np.pi
 
 ax.plot(omega_real, spectrum, color="steelblue", lw=1.5)
-ax.plot(omega_real * AU2EV, spectrum, color="steelblue", lw=0.0)   # invisible; for twin x
 
-# Mark individual pole positions (top modes by |S|)
-for i in top5:
-    if np.isnan(wp_arr[i]):
+for i, Q in enumerate(top5):
+    if np.isnan(wp_arr[Q]):
         continue
-    ax.axvline(wp_arr[i], color=cmap(list(top5).index(i) % 10),
-               lw=1.0, ls="--", alpha=0.7,
-               label=f"wp={wp_arr[i]:.3f} au={wp_arr[i]*AU2EV:.2f} eV")
+    ax.axvline(wp_arr[Q], color=cmap(i % 10), lw=1.0, ls="--", alpha=0.8,
+               label=f"Q={Q}: {wp_arr[Q]:.3f} au = {wp_arr[Q]*AU2EV:.2f} eV")
 
 ax.set_xlabel(r"$\omega$  (a.u.)", fontsize=11)
-ax.set_ylabel(r"$A(\omega)$  (arb. units)", fontsize=11)
+ax.set_ylabel(r"$A(\omega) = \sum_Q S_Q\,L(\omega{-}\omega_p^Q)$", fontsize=11)
 ax.set_title(f"BSE absorption spectrum  (η={ETA:.3f} a.u., active: all {n_act} MOs)",
              fontsize=10)
 ax.legend(fontsize=7)
 ax.set_xlim(0, OMEGA_MAX)
 ax.set_ylim(bottom=0)
 
-# Secondary x-axis in eV
 ax2 = ax.twiny()
 ax2.set_xlim(ax.get_xlim()[0] * AU2EV, ax.get_xlim()[1] * AU2EV)
 ax2.set_xlabel("eV", fontsize=10)
