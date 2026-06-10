@@ -36,8 +36,9 @@ ITER     = -1
 ACTIVE_SPACES = [
     ("HOMO+LUMO\n[6,7]",            [6, 7]),
     ("HOMO-1→LUMO+1\n[5,6,7,8]",   [5, 6, 7, 8]),
-    ("HOMO-1→LUMO+2\n[4,5,6,7,8]", [4, 5, 6, 7, 8]),
-    ("HOMO-2→LUMO+2\n[5,6,7,8,9]", [5, 6, 7, 8, 9]),
+    ("HOMO-2→LUMO+2\n[4,5,6,7,8,9]", [4, 5, 6, 7, 8, 9]),
+    ("HOMO-4→LUMO+2\n[2,...,9]", [2, 3, 4, 5, 6, 7, 8, 9]),
+    ("All orbital  \n", list(range(0, 10))),
 ]
 
 # ---------------------------------------------------------------------------
@@ -159,8 +160,8 @@ for label, mo_idx in ACTIVE_SPACES:
         flat_76 = loc7 * n_act + loc6
         Pph_MO  = (V_flat.conj().T @ P_ph[iw_mid]  @ V_flat).real
         Pbse_MO = (V_flat.conj().T @ P_bse[iw_mid] @ V_flat).real
-        print(f"  P^ph  [(6,7),(7,6)] = {Pph_MO[flat_67, flat_76]:.6e}")
-        print(f"  P^BSE [(6,7),(7,6)] = {Pbse_MO[flat_67, flat_76]:.6e}")
+        print(f"  V P^ph  V [(6,7),(7,6)] = {Pph_MO[flat_67, flat_76]:.6e}")
+        print(f"  V P^BSE V [(6,7),(7,6)] = {Pbse_MO[flat_67, flat_76]:.6e}")
 
 # ---------------------------------------------------------------------------
 # Plot: 2 rows × n_panels columns

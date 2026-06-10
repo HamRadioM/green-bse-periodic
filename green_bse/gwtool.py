@@ -289,7 +289,7 @@ def eval_Pi0_MO_active(iter, active_mo_indices,
     Pi0 = np.zeros((num_tau, num_s, num_k, n_act, n_act, n_act, n_act),
                    dtype=np.complex128)
 
-    print("*****     Pi0 (active MO space)     *****")
+    # print("*****     Pi0 (active MO space)     *****")
 
     for t in range(num_tau // 2):
         tt = num_tau - t - 1   # beta - t index
