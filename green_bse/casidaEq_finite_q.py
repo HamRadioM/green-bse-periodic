@@ -33,11 +33,11 @@ from casidaEq import concatAB, fix_phase, solveMO
 # MO-basis transformations
 # ---------------------------------------------------------------------------
 
-def VQ_ao2mo_kk(VQ_kk_ao, vexMO):
+def VQ_ao2mo_kk(VQ_kk_ao, vexMO, rSk=None):
     """
     Transform same-k GDF integrals from AO to MO basis at each k-point.
 
-    V_{mn,Q}(k) = C_k^† V_{μν,Q}(k) C_k
+    V_{mn,Q}(k) = (SC_k)^† V_{μν,Q}(k) (SC_k)
 
     This is the standard same-k transform, identical to VQ_ao2mo_k in
     casidaEq_periodic.py.  The result is used for the hole-hole and
@@ -49,6 +49,8 @@ def VQ_ao2mo_kk(VQ_kk_ao, vexMO):
         Same-k AO integrals ⟨φ_μ(k)|V_Q|φ_ν(k)⟩.
     vexMO : ndarray, shape (ns, nk, nao, nao)  complex128
         MO coefficient matrices from solveMO; spin index 0 is used.
+    rSk : ndarray, shape (ns, nk, nao, nao), optional
+        AO overlap matrices.  When provided, uses SC_k = S_k @ C_k.
 
     Returns
     -------
@@ -58,18 +60,19 @@ def VQ_ao2mo_kk(VQ_kk_ao, vexMO):
     nk, nQ, nao, _ = VQ_kk_ao.shape
     VQ_mo_kk = np.zeros_like(VQ_kk_ao, dtype=np.complex128)
     for ik in range(nk):
-        C = vexMO[0, ik, :, :]          # (nao, nao) at k-point ik
+        C  = vexMO[0, ik, :, :]
+        SC = rSk[0, ik] @ C if rSk is not None else C
         for iQ in range(nQ):
-            VQ_mo_kk[ik, iQ] = C.conj().T @ VQ_kk_ao[ik, iQ] @ C
+            VQ_mo_kk[ik, iQ] = SC.conj().T @ VQ_kk_ao[ik, iQ] @ SC
     return VQ_mo_kk
 
 
-def VQ_ao2mo_kq_proper(VQ_kq_ao, vexMO, kq_map):
+def VQ_ao2mo_kq_proper(VQ_kq_ao, vexMO, kq_map, rSk=None):
     """
     Transform off-diagonal GDF integrals from AO to MO basis using proper
     hole (k) and particle (k+q) MO coefficients.
 
-    VQ_ia[k,Q,i,a] = C_k†[:occ] @ VQ_kq_ao[k,Q] @ C_{k+q}[:,nocc:]
+    VQ_ia[k,Q,i,a] = (SC_k)†[:occ] @ VQ_kq_ao[k,Q] @ (SC_{k+q})[:,nocc:]
 
     The ⟨φ_μ(k)|V_Q|φ_ν(k+q)⟩ integrals are read from VQ_q{idx}.h5 and
     already encode the correct (k, k+q) pair.  This function applies the
@@ -86,6 +89,8 @@ def VQ_ao2mo_kq_proper(VQ_kq_ao, vexMO, kq_map):
         MO coefficient matrices; spin index 0 is used.
     kq_map : ndarray, shape (nk,)
         kq_map[k] = index of k+q in the k-mesh.
+    rSk : ndarray, shape (ns, nk, nao, nao), optional
+        AO overlap matrices.  When provided, uses SC_k = S_k @ C_k at each k.
 
     Returns
     -------
@@ -96,11 +101,13 @@ def VQ_ao2mo_kq_proper(VQ_kq_ao, vexMO, kq_map):
     nk, nQ, nao, _ = VQ_kq_ao.shape
     VQ_ia = np.zeros_like(VQ_kq_ao, dtype=np.complex128)
     for ik in range(nk):
-        ikq   = kq_map[ik]
-        C_k   = vexMO[0, ik,  :, :]   # MO coefficients at k   (holes)
-        C_kq  = vexMO[0, ikq, :, :]   # MO coefficients at k+q (particles)
+        ikq    = kq_map[ik]
+        C_k    = vexMO[0, ik,  :, :]
+        C_kq   = vexMO[0, ikq, :, :]
+        SC_k   = rSk[0, ik]  @ C_k  if rSk is not None else C_k
+        SC_kq  = rSk[0, ikq] @ C_kq if rSk is not None else C_kq
         for iQ in range(nQ):
-            VQ_ia[ik, iQ] = C_k.conj().T @ VQ_kq_ao[ik, iQ] @ C_kq
+            VQ_ia[ik, iQ] = SC_k.conj().T @ VQ_kq_ao[ik, iQ] @ SC_kq
     return VQ_ia
 
 

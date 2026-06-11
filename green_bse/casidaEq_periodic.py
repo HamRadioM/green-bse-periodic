@@ -40,7 +40,7 @@ from casidaEq import concatAB, fix_phase, solveMO
 # MO-basis transformation
 # ---------------------------------------------------------------------------
 
-def VQ_ao2mo_k(VQ, vexMO):
+def VQ_ao2mo_k(VQ, vexMO, rSk=None):
     """
     Transform the density-fitting Coulomb tensor from AO to MO basis at each k-point.
     Unlike the molecular VQ_ao2mo, each k-point uses its own MO coefficient matrix.
@@ -51,18 +51,22 @@ def VQ_ao2mo_k(VQ, vexMO):
         Density-fitted Coulomb integrals in AO basis.
     vexMO : ndarray, shape (ns, nk, nao, nao)
         MO coefficient matrices from solveMO; spin index 0 is used.
+    rSk : ndarray, shape (ns, nk, nao, nao), optional
+        AO overlap matrices at each k-point.  When provided the transform uses
+        SC_k = S_k @ C_k so that V_mo = (SC)† V_ao (SC).
 
     Returns
     -------
     VQ_mo : ndarray, shape (nk, nQ, nao, nao)
-        Coulomb integrals in MO basis, V_{mn,Q}(k) = C_k^† V_{ij,Q}(k) C_k.
+        Coulomb integrals in MO basis, V_{mn,Q}(k) = (SC_k)^† V_{ij,Q}(k) (SC_k).
     """
     nk, nQ, nao, _ = VQ.shape
     VQ_mo = np.zeros_like(VQ, dtype=np.complex128)
     for ik in range(nk):
-        C = vexMO[0, ik, :, :]          # (nao, nao) at k-point ik
+        C  = vexMO[0, ik, :, :]
+        SC = rSk[0, ik] @ C if rSk is not None else C
         for iQ in range(nQ):
-            VQ_mo[ik, iQ] = C.conj().T @ VQ[ik, iQ] @ C
+            VQ_mo[ik, iQ] = SC.conj().T @ VQ[ik, iQ] @ SC
     return VQ_mo
 
 

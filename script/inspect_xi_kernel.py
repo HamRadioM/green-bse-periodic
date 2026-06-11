@@ -101,10 +101,18 @@ def compute_all(example_dir: str, q_idx: int, beta: float, ir_file: str) -> dict
     print("[1/9] Loading mean-field input, G(τ), VQ …")
     with h5py.File(os.path.join(example_dir, 'mean_field_input.h5'), 'r') as f:
         Fk_raw = f['HF/Fock-k'][()]     # (ns, nk, nao, nao, 2) float64
+        Sk_raw = f['HF/S-k'][()]        # (ns, nk, nao, nao, 2) or (nao, nao, 2)
         nao    = int(f['params/nao'][()])
         nk     = int(f['params/nk'][()])
     # Re + i·Im, spin channel 0
     Fk  = Fk_raw[0, :, :, :, 0] + 1j * Fk_raw[0, :, :, :, 1]  # (nk, nao, nao)
+    # Build S_k (nk, nao, nao) from whatever shape S-k has
+    if Sk_raw.ndim == 6:   # (ns, nk, nao, nao, 2)
+        rSk = Sk_raw[0, :, :, :, 0] + 1j * Sk_raw[0, :, :, :, 1]
+    elif Sk_raw.ndim == 5:  # (nk, nao, nao, 2)
+        rSk = Sk_raw[:, :, :, 0] + 1j * Sk_raw[:, :, :, 1]
+    else:                   # (nao, nao, 2) — molecular, broadcast
+        rSk = np.tile((Sk_raw[:, :, 0] + 1j * Sk_raw[:, :, 1])[np.newaxis], (nk, 1, 1))
     C_k = np.zeros((nk, nao, nao), dtype=np.complex128)
     for k in range(nk):
         Fk_sym = 0.5 * (Fk[k] + Fk[k].conj().T)
@@ -156,7 +164,7 @@ def compute_all(example_dir: str, q_idx: int, beta: float, ir_file: str) -> dict
 
     # ── Step 6a: W_mo = index swap via MO-pair basis ──────────────────────────
     print("[6a/9] W_mo: QQ' → MO-pair basis → swap (m,n,m',n')→(m,m',n',n) → QQ' …")
-    W_mo = _squeeze_iw(transform_W_via_mo(Wqq_iw5, VQ_kq_ao, C_k, kq_map))
+    W_mo = _squeeze_iw(transform_W_via_mo(Wqq_iw5, VQ_kq_ao, C_k, kq_map, rSk=rSk))
 
     # ── Step 6b: W_ao = index swap directly in AO-pair basis ─────────────────
     print("[6b/9] W_ao: QQ' → AO-pair basis → swap (a,b,a',b')→(a,a',b',b) → QQ' …")

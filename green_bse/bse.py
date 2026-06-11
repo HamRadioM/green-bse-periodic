@@ -429,7 +429,8 @@ class BSESolver:
         print("Reading VQ matrix from integral file.")
         VQ_ao = ct.readVQ(self.config.int_path + "VQ_0.h5")
         nQ = VQ_ao.shape[1]
-        VQ = casida.VQ_ao2mo(VQ_ao, self.vexMO[0, 0, :])
+        rSk = self.results['rSk']
+        VQ = casida.VQ_ao2mo(VQ_ao, self.vexMO[0, 0, :], S=rSk[0, 0])
         
         # Handle Pi matrix (either calculate or read from file)
         if self.config.calc_pi_on_fly:

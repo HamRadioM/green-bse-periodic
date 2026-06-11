@@ -218,11 +218,12 @@ def dyson_equation(P0_iw: np.ndarray) -> np.ndarray:
 def transform_W_via_mo(W_qq_iw: np.ndarray,
                        VQ_kq_ao: np.ndarray,
                        C_k: np.ndarray,
-                       kq_map: np.ndarray) -> np.ndarray:
+                       kq_map: np.ndarray,
+                       rSk: np.ndarray = None) -> np.ndarray:
     """
     Transform W_{QQ'}(iΩ) by going through the MO-pair basis:
 
-      (i)  V_{Q,mn}(k) = Σ_{ab} C*_{k,am} V_{Q,ab}(k,k+q) C_{k+q,bn}
+      (i)  V_{Q,mn}(k) = Σ_{ab} (SC)*_{k,am} V_{Q,ab}(k,k+q) (SC)_{k+q,bn}
            W_{mn,m'n'}  = Σ_{QQ'} V*_{Q,mn}(k) W_{QQ'} V_{Q',m'n'}(k)
       (ii) Swap MO indices: (m, n, m', n') → (m, m', n', n)
       (iii) W'_{QQ'} += Σ_{mm',n'n} V*_{Q,mm'}(k) W^{swap}_{mm',n'n} V_{Q',n'n}(k)
@@ -233,6 +234,9 @@ def transform_W_via_mo(W_qq_iw: np.ndarray,
     VQ_kq_ao : (nk, NQ, nao, nao)    complex128   AO-basis DF integrals V(k, k+q)
     C_k      : (nk, nao, nao)         complex128   MO coefficients at each k
     kq_map   : (nk,) int                           kq_map[k] = index of k+q
+    rSk      : (nk, nao, nao)         complex128   AO overlap at each k (optional).
+               When provided the transform uses SC_k = S_k @ C_k so that
+               V_mo = (SC)† V_ao (SC).
 
     Returns
     -------
@@ -242,11 +246,12 @@ def transform_W_via_mo(W_qq_iw: np.ndarray,
     nk, _, nao, _    = VQ_kq_ao.shape
     npairs = nao * nao
 
-    # V_{Q,mn}(k) = C†_k @ V_{Q,ab}(k,k+q) @ C_{k+q}
+    # V_{Q,mn}(k) = (SC_k)†  V_{Q,ab}(k,k+q)  (SC_{k+q})
     V_flat = np.empty((nk, NQ, npairs), dtype=np.complex128)
     for k in range(nk):
-        tmp    = VQ_kq_ao[k] @ C_k[k]                         # (NQ, nao, nao)
-        V_mo_k = np.einsum('am,Qan->Qmn', C_k[k].conj(), tmp)  # (NQ, nao, nao)
+        SC_k   = rSk[k] @ C_k[k] if rSk is not None else C_k[k]
+        tmp    = VQ_kq_ao[k] @ SC_k                              # (NQ, nao, nao)
+        V_mo_k = np.einsum('am,Qan->Qmn', SC_k.conj(), tmp)     # (NQ, nao, nao)
         V_flat[k] = V_mo_k.reshape(NQ, npairs)
 
     W_iw = np.zeros((niw, ns, 1, NQ, NQ), dtype=np.complex128)

@@ -118,18 +118,19 @@ def solveMO(F, S, eigh_solver=LA.eigh, thr=1e-7):
     return eiv_sk, mo_coeff_sk
 
 
-def VQ_ao2mo(VQ, mo_vecs):
+def VQ_ao2mo(VQ, mo_vecs, S=None):
     """
     Transform the V_{Qij} tensor from AO basis to MO basis.
+    S is the AO overlap matrix (nao, nao); when provided the contraction
+    uses SC so that V_mo = (SC)† V_ao (SC), as required for a non-orthogonal basis.
     """
     # dimmension of VQ is (1, nQ, nao, nao)
-    VQ_mo  = np.zeros(VQ.shape,dtype=np.complex128)  
+    VQ_mo  = np.zeros(VQ.shape,dtype=np.complex128)
+    SC = S @ mo_vecs if S is not None else mo_vecs
     for ik in range(VQ.shape[0]):
         for iQ in range(VQ.shape[1]):
-            # temp = M_ao[ik, iQ] @ C  -> shape (nao, nmo)
-            temp = VQ[ik, iQ] @ mo_vecs
-            # M_mo[ik, iQ] = C.T @ temp -> shape (nmo, nmo)
-            VQ_mo[ik, iQ] = mo_vecs.conj().T @ temp
+            temp = VQ[ik, iQ] @ SC
+            VQ_mo[ik, iQ] = SC.conj().T @ temp
 
     return VQ_mo
 

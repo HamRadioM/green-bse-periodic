@@ -261,7 +261,8 @@ def eval_Pi0_MO_active(iter, active_mo_indices,
         Indices of the active MOs (near the Fermi level) within the full
         MO set.  All k-points share the same index window.
     input_h5 : str
-        HDF5 file containing MO coefficients at "/HF/mo_coeff".
+        HDF5 file containing MO coefficients at "/HF/mo_coeff" and the AO
+        overlap matrix at "/HF/S-k".
         Shape (nao, nmo) for molecular or (nk, nao, nmo) for periodic.
     sim_h5 : str
         HDF5 file from scGW containing G_tau.
@@ -280,30 +281,38 @@ def eval_Pi0_MO_active(iter, active_mo_indices,
     num_k   = G_tau.shape[2]
     nao     = G_tau.shape[3]
 
-    C_all = h5py.File(input_h5, "r")["/HF/mo_coeff"][()]
+    with h5py.File(input_h5, "r") as f:
+        C_all = f["/HF/mo_coeff"][()]
+        S_raw = f["/HF/S-k"][()].view(complex)
+        S_raw = S_raw.reshape(S_raw.shape[:-1])   # (ns, nk, nao, nao) or (nao, nao)
+
     if C_all.ndim == 2:
-        # Molecular (single k-point): broadcast over k dimension
         C_all = np.tile(C_all[np.newaxis, :, :], (num_k, 1, 1))
     # C_all shape: (num_k, nao, nmo)
 
+    # Normalise S to (num_k, nao, nao): drop spin dim if present, broadcast if molecular
+    if S_raw.ndim == 4:
+        S_all = S_raw[0]          # (nk, nao, nao)
+    elif S_raw.ndim == 3:
+        S_all = S_raw             # (nk, nao, nao)
+    else:
+        S_all = np.tile(S_raw[np.newaxis], (num_k, 1, 1))
+
     Pi0 = np.zeros((num_tau, num_s, num_k, n_act, n_act, n_act, n_act),
                    dtype=np.complex128)
-
-    # print("*****     Pi0 (active MO space)     *****")
 
     for t in range(num_tau // 2):
         tt = num_tau - t - 1   # beta - t index
         for s in range(num_s):
             for k in range(num_k):
-                C_act = C_all[k, :, active_mo_indices]  # (n_act, nao), rows = MOs
-                # G_MO[p,r] = sum_{a,b} C_act*[p,a] G_AO[a,b] C_act[r,b]
-                #            = C_act.conj() @ G_AO @ C_act.T
-
+                # SC_act[p, a] = (S_k @ C_k)[:, active_mo_indices] transposed
+                SC_act = (S_all[k] @ C_all[k])[:, active_mo_indices].T  # (n_act, nao)
+                # G_MO[p,r] = sum_{a,b} SC_act*[p,a] G_AO[a,b] SC_act[r,b]
                 g_ao1 = G_tau[tt, s, k].reshape(nao, nao)   # G(beta - t)
                 g_ao2 = G_tau[t,  s, k].reshape(nao, nao)   # G(t)
 
-                g_mo1 = C_act.conj() @ g_ao1 @ C_act.T      # (n_act, n_act)
-                g_mo2 = C_act.conj() @ g_ao2 @ C_act.T      # (n_act, n_act)
+                g_mo1 = SC_act.conj() @ g_ao1 @ SC_act.T    # (n_act, n_act)
+                g_mo2 = SC_act.conj() @ g_ao2 @ SC_act.T    # (n_act, n_act)
 
                 # Pi0[p,q,r,s] = -G(beta-t)[p,r] * G(t)[q,s]
                 Pi0[t, s, k] -= np.einsum('pr,qs->pqrs', g_mo1, g_mo2,

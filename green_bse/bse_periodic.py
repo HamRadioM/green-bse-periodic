@@ -207,7 +207,8 @@ class PeriodicBSESolver(BSESolver):
         print(f"  VQ shape: {VQ_ao.shape}  (nk={self.nk}, nQ={nQ})")
 
         # Transform to MO basis at each k-point
-        VQ = casida_k.VQ_ao2mo_k(VQ_ao, self.vexMO)
+        rSk = self.results['rSk']
+        VQ = casida_k.VQ_ao2mo_k(VQ_ao, self.vexMO, rSk=rSk)
 
         # Handle P̃(iΩ) — frequency-dependent polarization
         if self.config.calc_pi_on_fly:

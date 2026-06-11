@@ -305,8 +305,9 @@ class FiniteQBSESolver(BSESolver):
 
         # --- MO transforms ---
         print("Transforming VQ to MO basis.")
-        VQ_mo_kk = casida_fq.VQ_ao2mo_kk(VQ_kk_ao, self.vexMO)
-        VQ_ia    = casida_fq.VQ_ao2mo_kq_proper(VQ_kq_ao, self.vexMO, self.kq_map)
+        rSk = self.results['rSk']
+        VQ_mo_kk = casida_fq.VQ_ao2mo_kk(VQ_kk_ao, self.vexMO, rSk=rSk)
+        VQ_ia    = casida_fq.VQ_ao2mo_kq_proper(VQ_kq_ao, self.vexMO, self.kq_map, rSk=rSk)
 
         # --- Screened polarization P̃(q, iΩ) ---
         if self.config.calc_pi_on_fly:

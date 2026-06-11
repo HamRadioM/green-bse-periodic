@@ -49,6 +49,9 @@ print("Reading system data...")
 with h5py.File(INPUT_H5, "r") as f:
     nao      = int(f["/params/nao"][()])
     mo_coeff = f["/HF/mo_coeff"][()]
+    S_raw    = f["/HF/S-k"][()].view(complex)
+    S_raw    = S_raw.reshape(S_raw.shape[:-1])   # (..., nao, nao)
+S = S_raw.reshape(-1, nao, nao)[0]              # (nao, nao) — first k/spin block
 
 with h5py.File(INT_PATH + "VQ_0.h5", "r") as f:
     V_raw = f["/0"][()]
@@ -57,7 +60,7 @@ NQ = V_raw.shape[1]
 VQ_ao = np.zeros((1, NQ, nao, nao), dtype=np.complex128)
 for idx in range(nao):
     VQ_ao[0, :, :, idx] = V_raw[0, :, :, idx*2] + 1j * V_raw[0, :, :, idx*2+1]
-VQ_mo = casida.VQ_ao2mo(VQ_ao, mo_coeff)   # (1, NQ, nmo, nmo)
+VQ_mo = casida.VQ_ao2mo(VQ_ao, mo_coeff, S=S)   # (1, NQ, nmo, nmo)
 
 # Build tildeP_iw (full Q-space dressed polarizability via Dyson)
 print("Building P_tilde in Q-space...")
