@@ -73,7 +73,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
     p.add_argument(
         '--output', required=True, metavar='FILE',
         help='Output HDF5 path for P̃(q, iΩ).  '
-             'Pass this file to solveCasida_finite_q.py via --pi_file.'
+             'Consumed downstream by the BSE-kernel solver (solve_bse.py).'
     )
 
     # --- Physics ---
