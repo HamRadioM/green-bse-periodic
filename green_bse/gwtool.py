@@ -315,7 +315,7 @@ def eval_Pi0_MO_active(iter, active_mo_indices,
                 g_mo2 = SC_act.conj() @ g_ao2 @ SC_act.T    # (n_act, n_act)
 
                 # Pi0[p,q,r,s] = -G(beta-t)[p,r] * G(t)[q,s]
-                Pi0[t, s, k] -= np.einsum('pr,qs->pqrs', g_mo1, g_mo2,
+                Pi0[t, s, k] -= 2 * np.einsum('pr,qs->pqrs', g_mo1, g_mo2,
                                           optimize=True)
 
     return Pi0
