@@ -1,35 +1,31 @@
 #!/usr/bin/env python3
 #                                                                             #
-#    Copyright (c) 2025 Ming Wen <wenm@umich.edu>, University of Michigan.    #
+#    Copyright (c) 2026 Ming Wen <wenm@umich.edu>, University of Michigan.    #
 #                                                                             #
-#    Periodic, finite-Q two-step active-space BSE solver (RPA-scaling),       #
+#    Periodic, finite-q two-step active-space BSE solver (BSE+),              #
 #    driven from a periodic scGW output.                                      #
 #                                                                             #
-#    This is the crystalline analogue of twostep_bse.py.  It reuses the same  #
-#    three-step Q-space construction (periodic_active_bse.two_step_bse_periodic#
-#    ) and the finite-q MO/integral conventions of the full Casida solver     #
+#    This is the periodic analogue of twostep_bse.py.  It reuses the same     #
+#    q-space construction (periodic_active_bse.two_step_bse_periodic) and     #
+#    the finite-q MO/integral conventions of the full Casida solver           #
 #    (casidaEq_finite_q), so in the full-active limit it reproduces the full  #
-#    periodic BSE.  Excitations are the poles of the Q-space polarization,     #
-#    extracted by AAA / plasmon-pole continuation (active_bse.extract_*).      #
+#    periodic BSE.  Excitations are the poles of the q-space polarization,    #
+#    extracted by analytical continuation (active_bse.extract_*).             #
 #                                                                             #
 #    Inputs (raw green-mbpt layout, --space_symm False)                       #
 #    --------------------------------------------------                       #
 #      input_file : mean_field_input.h5  -- HF/S-k, Fock-k, H-k (full BZ),    #
 #                   params, and symmetry/{k,pairs} maps.                      #
-#      sim_file   : periodic scGW sim.h5 -- iterN/{Sigma1,Selfenergy,G_tau,mu}#
-#                   stored on the IBZ; unfolded to the full BZ here via        #
-#                   periodic_integrals.to_full_bz (U_k . X . U_k^dagger).      #
-#      int_path   : folder with the raw irreducible-k-pair DF integrals        #
-#                   (meta.h5 + VQ_*.h5).  V_Q(k1,k2) for the needed same-k and #
-#                   off-diagonal pairs is reconstructed by periodic_integrals. #
+#      sim_file   : sim.h5 -- iterN/{Sigma1,Selfenergy,G_tau,mu}              #
+#                   stored on the IBZ; unfolded to the full BZ here via       #
+#                   periodic_integrals.to_full_bz (U_k . X . U_k^dagger).     #
+#      int_path   : folder with the raw irreducible-k-pair DF integrals       #
+#                   (VQ_*.h5).  V_Q(k1,k2) for the needed same-k and          #
+#                   off-diagonal pairs is reconstructed by periodic_integrals.#
 #      ir_file    : IR-grid HDF5.                                             #
-#    The screened polarization Pi_stat(Q_exc) is built on the fly from the     #
-#    scGW Green's function (no external PolarizationSolver file needed).       #
 #                                                                             #
-#    Quasiparticle energies are generated on the fly per k-point: the static  #
-#    GW Fock eigenproblem F(k) C(k) = S(k) C(k) E(k) followed by a Pade QP    #
-#    correction from Sigma(iw) (qp.padeSigma over all k), mirroring           #
-#    FiniteQBSESolver.solve_molecular_orbitals.                               #
+#    The screened polarization Pi_stat(q) is built on the fly from the        #
+#    scGW Green's function.                                                   #
 #                                                                             #
 
 import argparse
@@ -72,19 +68,19 @@ class PeriodicTwoStepBSEConfig:
     ir_file: Optional[str] = None                # IR grid HDF5
     output_file: str = "periodic_two_step_bse.pdf"
 
-    q_idx: int = 0                               # exciton momentum index (BvK)
-    beta: float = 1000.0
+    q_idx: int = 0                               # exciton momentum index 
+    beta: float = 1000.0                         # thermodynamic beta (a.u.)
     iteration: int = -1                          # scGW iteration (-1 = last)
     qpac_enabled: bool = True                    # QP correction from Sigma(iw)
     channel: str = "singlet"                     # "singlet" or "triplet"
-    screening: str = "qresolved"                 # "qresolved" W^{k-k'} or "static" Pi(Q_exc)
+    screening: str = "qresolved"                 # "qresolved" W^{k-k'} or "static" Pi(q)
 
     # spectrum / extraction
-    eta: float = 0.05                            # Lorentzian broadening (eV)
+    eta: float = 0.05                            # broadening (eV)
     w_max: float = 1.0                           # pole window (a.u.) for AAA
     grid_max: float = 25.0                       # plot range (eV)
-    method: str = "aaa"                          # aaa | plaspole | hybrid
-    active_mode: str = "series"                  # "series" (nested) or "auto"
+    method: str = "aaa"                          # aaa | plaspole | nevanlinna
+    active_mode: str = "auto"                  # "series" (nested) or "auto"
 
     @classmethod
     def from_args(cls, args):
@@ -110,44 +106,43 @@ class PeriodicTwoStepBSESolver:
             raise ValueError("ir_file is required (path to the IR-grid HDF5).")
         self.results = {}
 
-    # --- 1. read mean-field (full BZ) + scGW output (IBZ -> unfold to BZ) --
+    # --- 1. read mean-field (full BZ) + scGW output (IBZ -> unfold to full BZ) --
     def load_input_data(self):
         c = self.config
         print("Reading input/sim files ...")
         with h5py.File(c.input_file, "r") as f:
-            rSk = f["/HF/S-k"][()].view(complex);     rSk = rSk.reshape(rSk.shape[:-1])
-            rFk_in = f["/HF/Fock-k"][()].view(complex); rFk_in = rFk_in.reshape(rFk_in.shape[:-1])
-            rHk = f["/HF/H-k"][()].view(complex);     rHk = rHk.reshape(rHk.shape[:-1])
+            rSk    = f["/HF/S-k"][()].view(complex);     rSk = rSk.reshape(rSk.shape[:-1])
+            rFk_in = f["/HF/Fock-k"][()].view(complex);  rFk_in = rFk_in.reshape(rFk_in.shape[:-1])
+            rHk    = f["/HF/H-k"][()].view(complex);     rHk = rHk.reshape(rHk.shape[:-1])
             self.nao = int(f["/params/nao"][()])
             self.nelec = int(f["/params/nel_cell"][()])
         # mean-field is on the FULL BZ; rFk_in shape (ns, nk, nao, nao)
-        self.nk = rFk_in.shape[1]
-        self.occ = self.nelec // 2
+        self.nk   = rFk_in.shape[1]
+        self.occ  = self.nelec // 2
         self.virt = self.nao - self.occ
 
-        # IBZ<->BZ unfolding maps (scGW G/Sigma are stored on the IBZ even with
-        # --space_symm False, because time-reversal still reduces the k-mesh).
+        # IBZ<->BZ unfolding maps (scGW G/Sigma are stored on the IBZ)
         self.ksym = pint.load_k_symmetry(c.input_file)
 
         with h5py.File(c.sim_file, "r") as f:
-            it = int(f["iter"][()]) if c.iteration == -1 else c.iteration
+            it       = int(f["iter"][()]) if c.iteration == -1 else c.iteration
             Sig1_ibz = f["iter%d/Sigma1" % it][()].view(complex)            # (ns, ink, nao, nao)
-            Sig_ibz = f["iter%d/Selfenergy/data" % it][()].view(complex)    # (nt, ns, ink, nao, nao)
-            G_ibz = f["iter%d/G_tau/data" % it][()].view(complex)          # (nt, ns, ink, nao, nao)
-            mu = f["iter%d/mu" % it][()]
+            Sig_ibz  = f["iter%d/Selfenergy/data" % it][()].view(complex)    # (nt, ns, ink, nao, nao)
+            G_ibz    = f["iter%d/G_tau/data" % it][()].view(complex)           # (nt, ns, ink, nao, nao)
+            mu       = f["iter%d/mu" % it][()]
 
         # Unfold to the full BZ so everything is consistent with the mean field.
-        Sig1 = pint.unfold_to_bz(Sig1_ibz, self.ksym, 1)                    # (ns, nk, nao, nao)
-        rSigmak = pint.unfold_to_bz(Sig_ibz, self.ksym, 2)                 # (nt, ns, nk, nao, nao)
-        self.G_tau = pint.unfold_to_bz(G_ibz, self.ksym, 2)               # (nt, ns, nk, nao, nao)
+        Sig1       = pint.unfold_to_bz(Sig1_ibz, self.ksym, 1)                    # (ns, nk, nao, nao)
+        rSigmak    = pint.unfold_to_bz(Sig_ibz,  self.ksym, 2)                 # (nt, ns, nk, nao, nao)
+        self.G_tau = pint.unfold_to_bz(G_ibz,    self.ksym, 2)               # (nt, ns, nk, nao, nao)
 
-        if it == 1:                                    # G0W0: HF reference Fock
+        # if G0W0 reference is used: read HF reference Fock
+        if it == 1:                                    
             rFk = rFk_in
         else:
             rFk = Sig1 + rHk
 
-        # Exact k-vector arithmetic on the BvK mesh (the cyclic (k+q)%nk map is
-        # wrong for 2-D/3-D meshes); kq_map[k] = index of k + Q_exc.
+        # Exact k-vector arithmetic on the q mesh
         self.kmaps = pint.build_kpoint_maps(c.input_file)
         self.kq_map = self.kmaps["ksum"][:, c.q_idx]
         self.results.update(rSk=rSk, rFk=rFk, rSigmak=rSigmak, mu=mu, iter=it)
@@ -169,8 +164,8 @@ class PeriodicTwoStepBSESolver:
             Sigma_mo = np.einsum("skab, tskbc, skcd -> tskad",
                                  mo_coeff_adj, self.results["rSigmak"], vexMO,
                                  optimize=True)
-            # qp.padeSigma is written for a single k-point (it collapses the
-            # k-axis); call it per k-point and reassemble the QP energies.
+            # qp.padeSigma is written for a single k-point, call it per k-point 
+            # and reassemble the QP energies.
             qp_vals = valsMO.copy()
             for k in range(self.nk):
                 ek = qp.padeSigma(Sigma_mo[:, :, k:k+1], valsMO[:, k:k+1],
@@ -178,7 +173,7 @@ class PeriodicTwoStepBSESolver:
                 qp_vals[:, k] = ek[:, 0]
             valsMO = qp_vals
         else:
-            print("QP correction disabled: using static-GW Fock eigenvalues.")
+            print("QP correction disabled: using static Fock eigenvalues.")
 
         self.mo_energy = valsMO[0].real                    # (nk, nao)
         vbm = max(self.mo_energy[k, self.occ - 1] for k in range(self.nk))
@@ -190,21 +185,21 @@ class PeriodicTwoStepBSESolver:
     def _resolve_screening_path(self):
         """Path to the integral set used for the screening (Pi, W).
 
-        Defaults to the Ewald-corrected 'df_int' (a sibling of int_path) when
-        present -- this matches the integrals scGW used for Sigma_c, so the BSE
-        screening is finite-size consistent with its own backbone.  Falls back
-        to int_path (df_hf_int, no q=0 correction) if df_int is unavailable.
+        Defaults to the Ewald-corrected 'df_int' when present.
+        It matches the integrals scGW used for Sigma_c, so the BSE
+        screening is finite-size consistent with its own backbone.  
+        Falls back to int_path (df_hf_int, no q=0 correction), 
+        if df_int is unavailable.
         """
         c = self.config
         cand = (c.screening_int_path if c.screening_int_path
                 else os.path.join(os.path.dirname(os.path.normpath(c.int_path)),
                                   "df_int"))
-        # load_stored_integrals concatenates "meta.h5", so keep a trailing sep.
         sep = lambda p: p if p.endswith(os.sep) else p + os.sep
         if os.path.isdir(cand) and os.path.exists(os.path.join(cand, "meta.h5")):
             differs = os.path.normpath(cand) != os.path.normpath(c.int_path)
             return sep(cand), differs
-        if c.screening_int_path:                       # explicit but missing -> error
+        if c.screening_int_path:
             raise FileNotFoundError(
                 "screening_int_path '%s' has no meta.h5" % cand)
         return sep(c.int_path), False
@@ -212,14 +207,14 @@ class PeriodicTwoStepBSESolver:
     def build_intermediates(self):
         c = self.config
         # Reconstruct the per-k DF integrals from the raw green-mbpt irreducible
-        # k-pair storage (still pair-reduced by time-reversal at --space_symm False).
+        # k-pair storage (pair-reduced by time-reversal)
         stored = pint.load_stored_integrals(c.int_path)
         sym = pint.load_kpair_symmetry(c.input_file)
         if sym["nk"] != self.nk:
             raise ValueError("integral nk=%d != input nk=%d" % (sym["nk"], self.nk))
         self.NQ = stored.shape[1]
 
-        # Screening integrals (df_int): Ewald-regularized q=0 head, used for Pi/W.
+        # Screening integrals (df_int): Ewald-corrected q=0 head, used for Pi/W.
         screen_path, differs = self._resolve_screening_path()
         if differs:
             print("    [screening] using '%s' for Pi/W (q=0 Ewald-corrected, "
@@ -233,17 +228,20 @@ class PeriodicTwoStepBSESolver:
                   "('%s') -- NO q=0 finite-size correction." % screen_path)
             stored_s = stored
 
-        VQ_kk_ao = pint.build_VQ_same_k(stored, sym)             # V_Q(k,k)
+        # V_Q(k,k)
+        VQ_kk_ao = pint.build_VQ_same_k(stored, sym)
+        
+        # V_Q(k,k+Q)
         if c.q_idx == 0:
             VQ_kq_ao = VQ_kk_ao
             print("    q_idx=0: same-k integrals used for the off-diagonal block.")
         else:
-            VQ_kq_ao = pint.build_VQ_offdiag(stored, sym, self.kq_map)  # V_Q(k,k+Q)
+            VQ_kq_ao = pint.build_VQ_offdiag(stored, sym, self.kq_map)  
 
         rSk = self.results["rSk"]
         # Exchange / bubble transition densities -> bare-Coulomb int_path (df_hf_int)
         self.VQ_mo_kk = casida_fq.VQ_ao2mo_kk(VQ_kk_ao, self.vexMO, rSk=rSk)
-        self.VQ_ia = casida_fq.VQ_ao2mo_kq_proper(VQ_kq_ao, self.vexMO,
+        self.VQ_ia    = casida_fq.VQ_ao2mo_kq_proper(VQ_kq_ao, self.vexMO,
                                                   self.kq_map, rSk=rSk)
 
         # bosonic Matsubara grid + IR transformer
@@ -274,7 +272,7 @@ class PeriodicTwoStepBSESolver:
         """
         P0(q, tau) -> Dyson -> P~(q, iOmega); return the static (iw=0) NQ x NQ
         matrix.  Spin-restricted (ns=1) carries the factor-2 spin sum, matching
-        gwtool.eval_P0_tilde_Q (the molecular two-step convention).
+        gwtool.eval_P0_tilde_Q.
         """
         G = self.G_tau                                    # (nt, ns, nk, nao, nao)
         spin = 2.0 if G.shape[1] == 1 else 1.0

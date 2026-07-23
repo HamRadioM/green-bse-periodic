@@ -210,16 +210,22 @@ def screened_direct_kernel_qresolved(Voo_all, Vvv_all, M_q, kq_exc, kdiff,
     av = np.asarray(act_virt) - occ                       # local virt indices
     no, nv = ao.size, av.size
     n = nk * no * nv
-    K = np.zeros((nk, no, nv, nk, no, nv), dtype=np.complex128)
-    for k in range(nk):
-        kq = kq_exc[k]
-        for kp in range(nk):
-            kpq = kq_exc[kp]
-            Voo = Voo_all[k, kp][:, ao][:, :, ao]               # (NQ, no, no)  [i@k, j@k']
-            Vvv = Vvv_all[kpq, kq][:, av][:, :, av]             # (NQ, nv, nv)  [b@k'q, a@kq]
-            M = M_q[kdiff[k, kp]]
-            K[k, :, :, kp, :, :] = -(1.0 / nk) * np.einsum(
-                'Qij,QP,Pba->iajb', Voo, M, Vvv, optimize=True)
+    NQ = M_q.shape[1]
+    kq = np.asarray(kq_exc)
+
+    # active blocks for every (k, k') pair at once
+    Voo = Voo_all[:, :, :, ao[:, None], ao[None, :]]      # (nk, nk, NQ, no, no)  [i@k, j@k']
+    # Vvv[k, k'] = Vvv_all[k'+Q_exc, k+Q_exc]             # (nk, nk, NQ, nv, nv)  [b@k'q, a@kq]
+    Vvv = Vvv_all[kq[None, :], kq[:, None]][:, :, :, av[:, None], av[None, :]]
+
+    # T[k,k',P,i,j] = sum_Q Voo[k,k',Q,i,j] M^{k-k'}[Q,P]: batch the k-pairs
+    # that share a momentum transfer q = k-k' (nk einsums instead of nk^2).
+    T = np.empty((nk, nk, NQ, no, no), dtype=np.complex128)
+    for q in range(nk):
+        sel = kdiff == q                                  # (nk, nk) bool
+        T[sel] = np.einsum('xQij,QP->xPij', Voo[sel], M_q[q], optimize=True)
+
+    K = -(1.0 / nk) * np.einsum('kKPij,kKPba->kiaKjb', T, Vvv, optimize=True)
     return K.reshape(n, n)
 
 
@@ -239,6 +245,14 @@ def eval_ladder_Q(D, Delta, omega, kernel=None):
     * kernel = None                                  -> bare bubble
                                                         (P^act(0) or P^(0))
 
+    A is frequency-independent, so the resolvent is never LU-factorized per
+    frequency: for kernel=None A is diagonal and (iOmega - A)^{-1} is applied
+    in closed form; otherwise A is diagonalized ONCE and every frequency is a
+    cheap contraction  P(iOmega) = (D V) diag(1/(iOmega - lam)) (V^{-1} D^dag).
+    A badly conditioned eigenbasis is detected by re-checking the smallest
+    |Omega| frequency against a direct solve, falling back to per-frequency
+    solves (the pre-optimization behavior) if it disagrees.
+
     Parameters
     ----------
     D : (NQ, n_pair) complex      transition densities (1/sqrt(Nk) included).
@@ -252,15 +266,33 @@ def eval_ladder_Q(D, Delta, omega, kernel=None):
     """
     NQ, n = D.shape
     niw = omega.shape[0]
-    A = np.diag(Delta).astype(np.complex128)
-    if kernel is not None:
-        A = A + kernel
     Dh = D.conj().T                                        # (n, NQ)
+    P = np.empty((niw, NQ, NQ), dtype=np.complex128)
+
+    if kernel is None:                                     # A diagonal
+        for iw in range(niw):
+            g = 1.0 / (1j * omega[iw] - Delta)             # (n,)
+            P[iw] = (D * g) @ Dh
+        return P
+
+    A = np.diag(Delta).astype(np.complex128) + kernel
     In = np.eye(n, dtype=np.complex128)
-    P = np.zeros((niw, NQ, NQ), dtype=np.complex128)
-    for iw in range(niw):
-        G2p = np.linalg.solve(1j * omega[iw] * In - A, Dh)   # (n, NQ)
-        P[iw] = D @ G2p
+    try:
+        lam, V = np.linalg.eig(A)
+        R = D @ V                                          # (NQ, n)
+        L = np.linalg.solve(V, Dh)                         # (n, NQ)
+        for iw in range(niw):
+            P[iw] = (R / (1j * omega[iw] - lam)) @ L
+        # eigenbasis sanity check at the worst-conditioned (smallest |Omega|)
+        iw0 = int(np.argmin(np.abs(omega)))
+        P_ref = D @ np.linalg.solve(1j * omega[iw0] * In - A, Dh)
+        err = np.max(np.abs(P[iw0] - P_ref))
+        ok = np.isfinite(err) and err <= 1e-8 * max(np.max(np.abs(P_ref)), 1e-30)
+    except np.linalg.LinAlgError:                          # singular eigenbasis
+        ok = False
+    if not ok:                                             # defective A: solve
+        for iw in range(niw):
+            P[iw] = D @ np.linalg.solve(1j * omega[iw] * In - A, Dh)
     return P
 
 
